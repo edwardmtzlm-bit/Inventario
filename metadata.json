@@ -1,0 +1,7 @@
+{
+  "name": "InvExpert - Sistema de Inventario Inteligente",
+  "description": "Una aplicación completa para la gestión de inventario físico, generación de órdenes con QR, firma digital de recibido y control de movimientos.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
