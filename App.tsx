@@ -768,7 +768,9 @@ export default function App() {
         newLogs.push(log);
       }
 
-      const itemMap = new Map(order.items.map(item => [item.productId, item.quantity]));
+      const itemMap = new Map<string, number>(
+        order.items.map(item => [item.productId, item.quantity])
+      );
       setProducts(prev =>
         prev.map(prod =>
           itemMap.has(prod.id)
