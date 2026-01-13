@@ -154,6 +154,11 @@ export const supabaseService = {
       .eq('id', id);
     if (error) throw error;
   },
+ 
+  async deleteOrder(id: string): Promise<void> {
+    const { error } = await supabase.from('orders').delete().eq('id', id);
+    if (error) throw error;
+  },
 
   async getLogs(): Promise<InventoryLog[]> {
     const { data, error } = await supabase
@@ -175,6 +180,11 @@ export const supabaseService = {
       user_name: log.userName,
       order_id: log.orderId || null
     });
+    if (error) throw error;
+  },
+
+  async deleteLogsByOrderId(orderId: string): Promise<void> {
+    const { error } = await supabase.from('logs').delete().eq('order_id', orderId);
     if (error) throw error;
   }
 };

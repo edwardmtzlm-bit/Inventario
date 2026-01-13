@@ -10,6 +10,8 @@ import { AUTHORIZED_USER, CATEGORIES, APP_CREDENTIALS } from './constants';
 import { QRGenerator } from './components/QRGenerator';
 import { SignaturePad } from './components/SignaturePad';
 
+const DELETE_PASSWORD = import.meta.env.VITE_DELETE_PASSWORD as string | undefined;
+
 // --- Components ---
 
 const Layout: React.FC<{ children: React.ReactNode, user: User | null, onLogout: () => void }> = ({ children, user, onLogout }) => {
@@ -447,10 +449,17 @@ const OrdersListView: React.FC<{ orders: Order[] }> = ({ orders }) => {
   );
 };
 
-const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) => void }> = ({ order, onComplete }) => {
+const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) => void, onDelete: (orderId: string) => Promise<boolean> }> = ({ order, onComplete, onDelete }) => {
   const [showFulfillment, setShowFulfillment] = useState(false);
   const navigate = useNavigate();
   if (!order) return null;
+
+  const handleDelete = async () => {
+    const ok = await onDelete(order.id);
+    if (ok) {
+      navigate('/orders');
+    }
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -549,6 +558,13 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
           )}
         </div>
       )}
+
+      <button
+        onClick={handleDelete}
+        className="w-full py-3 text-rose-600 font-bold rounded-2xl border border-rose-200 bg-rose-50 hover:bg-rose-100 transition"
+      >
+        Eliminar orden
+      </button>
     </div>
   );
 };
@@ -792,6 +808,32 @@ export default function App() {
     }
   };
 
+  const deleteOrder = async (orderId: string): Promise<boolean> => {
+    if (!DELETE_PASSWORD) {
+      alert('Configura VITE_DELETE_PASSWORD en .env.local');
+      return false;
+    }
+    const input = prompt('Contraseña para eliminar');
+    if (!input) return false;
+    if (input !== DELETE_PASSWORD) {
+      alert('Contraseña incorrecta');
+      return false;
+    }
+    const confirmed = confirm('¿Eliminar esta orden? Esta acción no se puede deshacer.');
+    if (!confirmed) return false;
+
+    try {
+      await supabaseService.deleteOrder(orderId);
+      await supabaseService.deleteLogsByOrderId(orderId);
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+      setLogs(prev => prev.filter(l => l.orderId !== orderId));
+      return true;
+    } catch (err) {
+      alert('No se pudo eliminar la orden');
+      return false;
+    }
+  };
+
   if (!user) return <LoginView onLogin={setUser} />;
 
   return (
@@ -837,7 +879,7 @@ export default function App() {
             />
             <Route path="/orders" element={<OrdersListView orders={orders} />} />
             <Route path="/orders/new" element={<CreateOrderView products={products} onCreate={createOrder} />} />
-            <Route path="/orders/:id" element={<OrderRouteWrapper orders={orders} onFulfill={fulfillOrder} />} />
+          <Route path="/orders/:id" element={<OrderRouteWrapper orders={orders} onFulfill={fulfillOrder} onDelete={deleteOrder} />} />
             <Route path="/scan" element={<ScannerWrapper />} />
             <Route path="/logs" element={<LogsView logs={logs} />} />
           </Routes>
@@ -847,14 +889,14 @@ export default function App() {
   );
 }
 
-const OrderRouteWrapper = ({ orders, onFulfill }: { orders: Order[], onFulfill: (id: string, s: string) => void }) => {
+const OrderRouteWrapper = ({ orders, onFulfill, onDelete }: { orders: Order[], onFulfill: (id: string, s: string) => void, onDelete: (id: string) => Promise<boolean> }) => {
   const location = useLocation();
   const parts = location.pathname.split('/');
   const id = parts[parts.length - 1];
   const order = orders.find(o => o.id === id);
   const navigate = useNavigate();
   if (!order) return <div className="p-4 text-center text-slate-400">Orden no encontrada</div>;
-  return <OrderDetailView order={order} onComplete={s => { onFulfill(order.id, s); navigate('/orders'); }} />;
+  return <OrderDetailView order={order} onComplete={s => { onFulfill(order.id, s); navigate('/orders'); }} onDelete={onDelete} />;
 };
 
 const ScannerWrapper = () => {
