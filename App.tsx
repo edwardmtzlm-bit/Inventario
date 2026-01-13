@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { HashRouter, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
 import { 
-  Product, Order, InventoryLog, User, OrderStatus, LogType, OrderItem, OrderType 
+  Product, Order, InventoryLog, User, OrderStatus, LogType, OrderItem, OrderType, RawMaterial 
 } from './types';
 import { storageService } from './services/storageService';
 import { supabaseService } from './services/supabaseService';
@@ -12,6 +12,40 @@ import { SignaturePad } from './components/SignaturePad';
 
 const DELETE_PASSWORD = import.meta.env.VITE_DELETE_PASSWORD as string | undefined;
 
+const AMAZON_LOW_STOCK = 100;
+const RAW_LOW_STOCK = 3;
+const RAW_SIZES = ['S', 'M', 'L', 'XL'];
+const RAW_COLORS = ['Blanco', 'Negro'];
+const AMAZON_DESIGNS = [
+  'T-Shirt Soy Oveja Negra Full',
+  'T-Shirt Oveja Negra Minimal Black',
+  'T-Shirt Soy Oveja Negra Blanca',
+  'T-Shirt Oveja Negra Minimal Blanca',
+  'T-Shirt Soy Oveja Negra Black'
+];
+
+const DESIGN_CODES: Record<string, string> = {
+  'T-Shirt Soy Oveja Negra Full': 'SONF',
+  'T-Shirt Oveja Negra Minimal Black': 'ONMB',
+  'T-Shirt Soy Oveja Negra Blanca': 'SONB',
+  'T-Shirt Oveja Negra Minimal Blanca': 'ONMBL',
+  'T-Shirt Soy Oveja Negra Black': 'SONBK'
+};
+
+const COLOR_CODES: Record<string, string> = {
+  Blanco: 'WHT',
+  Negro: 'BLK'
+};
+
+const buildAmazonSku = (design: string, size: string, color: string) => {
+  const designCode = DESIGN_CODES[design] || 'TSH';
+  const colorCode = COLOR_CODES[color] || 'CLR';
+  return `AMZ-${designCode}-${size}-${colorCode}`;
+};
+
+const buildAmazonName = (design: string, size: string, color: string) => {
+  return `${design} - ${size} - ${color}`;
+};
 // --- Components ---
 
 const Layout: React.FC<{ children: React.ReactNode, user: User | null, onLogout: () => void }> = ({ children, user, onLogout }) => {
@@ -160,11 +194,28 @@ const LoginView: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) => 
   );
 };
 
-const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: InventoryLog[] }> = ({ products, orders, logs }) => {
-  const lowStockItems = products.filter(p => p.stock <= p.minStock);
+const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: InventoryLog[]; rawMaterials: RawMaterial[] }> = ({ products, orders, logs, rawMaterials }) => {
+  const lowStockItems = products.filter(p => !p.sku.startsWith('AMZ-') && p.stock <= p.minStock);
   const lowAmazonItems = products.filter(p => p.amazonEnabled && p.amazonStock <= AMAZON_LOW_STOCK);
+  const rawMap = rawMaterials.reduce((acc, r) => {
+    const key = `${r.size}-${r.color}`;
+    const existing = acc.get(key);
+    if (!existing || r.qty > existing.qty) {
+      acc.set(key, r);
+    }
+    return acc;
+  }, new Map<string, RawMaterial>());
+  const rawAlertItems = RAW_SIZES.flatMap(size =>
+    RAW_COLORS.map(color => {
+      const key = `${size}-${color}`;
+      const qty = Number(rawMap.get(key)?.qty ?? 0);
+      return { id: key, size, color, qty };
+    })
+  );
+  const lowRawItems = rawAlertItems.filter(r => r.qty <= RAW_LOW_STOCK);
   const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
   const completedToday = orders.filter(o => (o.status !== OrderStatus.PENDING) && new Date(o.deliveredAt || o.createdAt).toDateString() === new Date().toDateString());
+  const [showAllRawAlerts, setShowAllRawAlerts] = useState(false);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -224,6 +275,34 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
           <p className="text-center py-8 text-xs text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">Sin alertas</p>
         )}
       </section>
+
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-slate-800">
+            Alertas Materia Prima: {lowRawItems.length}
+          </h2>
+          {lowRawItems.length > 0 ? (
+            <button
+              onClick={() => setShowAllRawAlerts(prev => !prev)}
+              className="text-xs text-indigo-600 font-bold"
+            >
+              {showAllRawAlerts ? 'Ver menos' : 'Ver todo'}
+            </button>
+          ) : null}
+        </div>
+        {lowRawItems.length > 0 ? (
+          <div className="space-y-2">
+            {(showAllRawAlerts ? lowRawItems : lowRawItems.slice(0, 3)).map(r => (
+              <div key={r.id} className="bg-rose-50 p-3 rounded-xl border border-rose-100 flex justify-between items-center">
+                <span className="text-sm font-bold text-slate-900">{r.size} · {r.color}</span>
+                <span className="text-xs font-black text-rose-600">{r.qty} unid.</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-center py-8 text-xs text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">Sin alertas</p>
+        )}
+      </section>
     </div>
   );
 };
@@ -260,13 +339,32 @@ const ProductFormModal: React.FC<{ isOpen: boolean, onClose: () => void, onSave:
 
 const InventoryListView: React.FC<{ 
   products: Product[], 
+  rawMaterials: RawMaterial[],
   onAddStock: (pid: string, qty: number) => void, 
   onDeleteProduct: (pid: string) => void,
-  onAddProduct: (p: Partial<Product>) => void 
-}> = ({ products, onAddStock, onDeleteProduct, onAddProduct }) => {
+  onAddProduct: (p: Partial<Product>) => void,
+  onAddRawStock: (size: string, color: string, qty: number) => void,
+  onRemoveRawStock: (size: string, color: string, qty: number) => void,
+  onConvertRaw: (design: string, size: string, color: string, qty: number) => void
+}> = ({ products, rawMaterials, onAddStock, onDeleteProduct, onAddProduct, onAddRawStock, onRemoveRawStock, onConvertRaw }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [rawSize, setRawSize] = useState(RAW_SIZES[0]);
+  const [rawColor, setRawColor] = useState(RAW_COLORS[0]);
+  const [rawQty, setRawQty] = useState(1);
+  const [convertDesign, setConvertDesign] = useState(AMAZON_DESIGNS[0]);
+  const [convertSize, setConvertSize] = useState(RAW_SIZES[0]);
+  const [convertColor, setConvertColor] = useState(RAW_COLORS[0]);
+  const [convertQty, setConvertQty] = useState(1);
   const filtered = products.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.toLowerCase().includes(searchTerm.toLowerCase()));
+  const rawMap: Map<string, RawMaterial> = rawMaterials.reduce((acc, r) => {
+    const key = `${r.size}-${r.color}`;
+    const existing = acc.get(key);
+    if (!existing || r.qty > existing.qty) {
+      acc.set(key, r);
+    }
+    return acc;
+  }, new Map<string, RawMaterial>());
 
   return (
     <div className="space-y-4">
@@ -305,6 +403,108 @@ const InventoryListView: React.FC<{
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+        <h3 className="text-lg font-black text-slate-800">Materia Prima</h3>
+
+        <div className="grid grid-cols-2 gap-3">
+          {RAW_SIZES.flatMap(size =>
+            RAW_COLORS.map(color => {
+              const key = `${size}-${color}`;
+              const qty = rawMap.get(key)?.qty ?? 0;
+              return (
+                <div key={key} className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                  <p className="text-xs font-bold text-slate-500 uppercase">{size} · {color}</p>
+                  <p className="text-lg font-black text-slate-800">{qty}</p>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="pt-2 border-t border-slate-100 space-y-3">
+          <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Agregar stock MP</label>
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_120px] gap-2">
+            <select
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={rawSize}
+              onChange={e => setRawSize(e.target.value)}
+            >
+              {RAW_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={rawColor}
+              onChange={e => setRawColor(e.target.value)}
+            >
+              {RAW_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input
+              type="number"
+              min="1"
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={rawQty}
+              onChange={e => setRawQty(parseInt(e.target.value) || 1)}
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              onClick={() => onAddRawStock(rawSize, rawColor, rawQty)}
+              className="w-full px-4 py-3 bg-emerald-600 text-white rounded-xl font-bold"
+            >
+              Agregar
+            </button>
+            <button
+              onClick={() => onRemoveRawStock(rawSize, rawColor, rawQty)}
+              className="w-full px-4 py-3 bg-rose-600 text-white rounded-xl font-bold"
+            >
+              Quitar
+            </button>
+          </div>
+        </div>
+
+        <div className="pt-2 border-t border-slate-100 space-y-3">
+          <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Convertir a producto</label>
+          <select
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={convertDesign}
+            onChange={e => setConvertDesign(e.target.value)}
+          >
+            {AMAZON_DESIGNS.map(d => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <select
+              className="flex-1 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={convertSize}
+              onChange={e => setConvertSize(e.target.value)}
+            >
+              {RAW_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select
+              className="flex-1 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={convertColor}
+              onChange={e => setConvertColor(e.target.value)}
+            >
+              {RAW_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input
+              type="number"
+              min="1"
+              className="w-24 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={convertQty}
+              onChange={e => setConvertQty(parseInt(e.target.value) || 1)}
+            />
+            <button
+              onClick={() => onConvertRaw(convertDesign, convertSize, convertColor, convertQty)}
+              className="px-4 py-3 bg-indigo-600 text-white rounded-xl font-bold"
+            >
+              Convertir
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -734,8 +934,6 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
   );
 };
 
-const AMAZON_LOW_STOCK = 100;
-
 const AmazonView: React.FC<{
   products: Product[];
   onTransfer: (productId: string, qty: number) => Promise<void>;
@@ -978,6 +1176,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [logs, setLogs] = useState<InventoryLog[]>([]);
+  const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -986,19 +1185,31 @@ export default function App() {
     setLoadError(null);
     try {
       await supabaseService.seedProductsIfEmpty();
-      const [loadedProducts, loadedOrders, loadedLogs] = await Promise.all([
+      await supabaseService.seedRawMaterialsIfMissing();
+      const [loadedProducts, loadedOrders, loadedLogs, loadedRawMaterials] = await Promise.all([
         supabaseService.getProducts(),
         supabaseService.getOrders(),
-        supabaseService.getLogs()
+        supabaseService.getLogs(),
+        supabaseService.getRawMaterials()
       ]);
       setProducts(loadedProducts);
       setOrders(loadedOrders);
       setLogs(loadedLogs);
+      setRawMaterials(loadedRawMaterials);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error cargando datos';
       setLoadError(message);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const refreshRawMaterials = async () => {
+    try {
+      const updated = await supabaseService.getRawMaterials();
+      setRawMaterials(updated);
+    } catch (err) {
+      // Best-effort refresh; keep current UI if it fails.
     }
   };
 
@@ -1290,6 +1501,101 @@ export default function App() {
     }
   };
 
+  const addRawStock = async (size: string, color: string, qty: number): Promise<void> => {
+    if (!Number.isFinite(qty) || qty <= 0) {
+      alert('Cantidad inválida');
+      return;
+    }
+    const rawCandidates = rawMaterials.filter(r => r.size === size && r.color === color);
+    const raw = rawCandidates.sort((a, b) => b.qty - a.qty)[0];
+    try {
+      if (!raw) {
+        const created = await supabaseService.addRawMaterial(size, color, qty);
+        setRawMaterials(prev => [...prev, created]);
+        await refreshRawMaterials();
+        return;
+      }
+      const newQty = raw.qty + qty;
+      await supabaseService.updateRawMaterialQty(raw.id, newQty);
+      setRawMaterials(prev => prev.map(r => r.id === raw.id ? { ...r, qty: newQty } : r));
+      await refreshRawMaterials();
+    } catch (err) {
+      alert('No se pudo actualizar materia prima');
+    }
+  };
+
+  const removeRawStock = async (size: string, color: string, qty: number): Promise<void> => {
+    if (!Number.isFinite(qty) || qty <= 0) {
+      alert('Cantidad inválida');
+      return;
+    }
+    const rawCandidates = rawMaterials.filter(r => r.size === size && r.color === color);
+    const raw = rawCandidates.sort((a, b) => b.qty - a.qty)[0];
+    if (!raw) {
+      alert('Materia prima no encontrada');
+      return;
+    }
+    if (raw.qty < qty) {
+      alert('No hay suficiente materia prima para descontar');
+      return;
+    }
+    const newQty = raw.qty - qty;
+    try {
+      await supabaseService.updateRawMaterialQty(raw.id, newQty);
+      setRawMaterials(prev => prev.map(r => r.id === raw.id ? { ...r, qty: newQty } : r));
+      await refreshRawMaterials();
+    } catch (err) {
+      alert('No se pudo actualizar materia prima');
+    }
+  };
+
+  const convertRawToProduct = async (design: string, size: string, color: string, qty: number): Promise<void> => {
+    if (!Number.isFinite(qty) || qty <= 0) {
+      alert('Cantidad inválida');
+      return;
+    }
+    const rawCandidates = rawMaterials.filter(r => r.size === size && r.color === color);
+    const raw = rawCandidates.sort((a, b) => b.qty - a.qty)[0];
+    if (!raw) {
+      alert('Materia prima no encontrada');
+      return;
+    }
+    if (raw.qty < qty) {
+      alert('Stock insuficiente de materia prima');
+      return;
+    }
+    const sku = buildAmazonSku(design, size, color);
+    const name = buildAmazonName(design, size, color);
+    const existing = products.find(p => p.sku === sku);
+
+    try {
+      const newRawQty = raw.qty - qty;
+      await supabaseService.updateRawMaterialQty(raw.id, newRawQty);
+      setRawMaterials(prev => prev.map(r => r.id === raw.id ? { ...r, qty: newRawQty } : r));
+      await refreshRawMaterials();
+
+      if (existing) {
+        const newStock = existing.stock + qty;
+        await supabaseService.updateProductStock(existing.id, newStock);
+        setProducts(prev => prev.map(p => p.id === existing.id ? { ...p, stock: newStock } : p));
+      } else {
+        const created = await supabaseService.addProduct({
+          sku,
+          name,
+          category: 'Mercancía',
+          stock: qty,
+          amazonStock: 0,
+          amazonEnabled: false,
+          minStock: 5,
+          price: 0
+        });
+        setProducts(prev => [...prev, created]);
+      }
+    } catch (err) {
+      alert('No se pudo convertir materia prima');
+    }
+  };
+
   if (!user) return <LoginView onLogin={setUser} />;
 
   return (
@@ -1305,26 +1611,30 @@ export default function App() {
           </div>
         ) : (
           <Routes>
-            <Route path="/" element={<Dashboard products={products} orders={orders} logs={logs} />} />
-          <Route
-            path="/inventory"
-            element={
-              <InventoryListView
-                products={products}
-                onAddStock={addStock}
-                onAddProduct={p => {
-                  const payload: Partial<Product> = {
-                    sku: p.sku || '?',
-                    name: p.name || '?',
-                    category: p.category || 'Otros',
-                    stock: p.stock || 0,
-                    amazonStock: 0,
-                    amazonEnabled: false,
-                    minStock: p.minStock || 5,
-                    price: p.price || 0
-                  };
-                  void supabaseService.addProduct(payload)
-                    .then(newProduct => setProducts(prev => [...prev, newProduct]))
+            <Route path="/" element={<Dashboard products={products} orders={orders} logs={logs} rawMaterials={rawMaterials} />} />
+            <Route
+              path="/inventory"
+              element={
+                <InventoryListView
+                  products={products}
+                  rawMaterials={rawMaterials}
+                  onAddStock={addStock}
+                  onAddRawStock={addRawStock}
+                  onRemoveRawStock={removeRawStock}
+                  onConvertRaw={convertRawToProduct}
+                  onAddProduct={p => {
+                    const payload: Partial<Product> = {
+                      sku: p.sku || '?',
+                      name: p.name || '?',
+                      category: p.category || 'Otros',
+                      stock: p.stock || 0,
+                      amazonStock: 0,
+                      amazonEnabled: false,
+                      minStock: p.minStock || 5,
+                      price: p.price || 0
+                    };
+                    void supabaseService.addProduct(payload)
+                      .then(newProduct => setProducts(prev => [...prev, newProduct]))
                       .catch(() => alert('No se pudo crear el producto'));
                   }}
                   onDeleteProduct={id => {
@@ -1365,7 +1675,8 @@ const AmazonRouteWrapper = ({
   onSale,
   onEnable,
   onCreate
-}: {
+}: 
+{
   products: Product[];
   onTransfer: (id: string, qty: number) => Promise<void>;
   onSale: (id: string, qty: number) => Promise<void>;

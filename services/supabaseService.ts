@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { InventoryLog, Order, OrderStatus, OrderType, Product } from '../types';
+import { InventoryLog, Order, OrderStatus, OrderType, Product, RawMaterial } from '../types';
 import { INITIAL_PRODUCTS } from '../constants';
 
 const toIsoString = (value?: number) => (value ? new Date(value).toISOString() : null);
@@ -44,6 +44,16 @@ const mapLogFromDb = (row: any): InventoryLog => ({
   userName: row.user_name,
   orderId: row.order_id || undefined
 });
+
+const mapRawMaterialFromDb = (row: any): RawMaterial => ({
+  id: row.id,
+  size: row.size,
+  color: row.color,
+  qty: row.qty
+});
+
+const RAW_SIZES = ['S', 'M', 'L', 'XL'];
+const RAW_COLORS = ['Blanco', 'Negro'];
 
 export const supabaseService = {
   async getProducts(): Promise<Product[]> {
@@ -210,5 +220,51 @@ export const supabaseService = {
   async deleteLogsByOrderId(orderId: string): Promise<void> {
     const { error } = await supabase.from('logs').delete().eq('order_id', orderId);
     if (error) throw error;
+  },
+
+  async getRawMaterials(): Promise<RawMaterial[]> {
+    const { data, error } = await supabase
+      .from('raw_materials')
+      .select('*')
+      .order('size', { ascending: true })
+      .order('color', { ascending: true });
+    if (error) throw error;
+    return (data || []).map(mapRawMaterialFromDb);
+  },
+
+  async seedRawMaterialsIfMissing(): Promise<void> {
+    const { data, error } = await supabase
+      .from('raw_materials')
+      .select('size,color');
+    if (error) throw error;
+
+    const existing = new Set((data || []).map(row => `${row.size}-${row.color}`));
+    const rows = RAW_SIZES.flatMap(size =>
+      RAW_COLORS
+        .filter(color => !existing.has(`${size}-${color}`))
+        .map(color => ({
+          size,
+          color,
+          qty: 0
+        }))
+    );
+    if (rows.length === 0) return;
+    const { error: insertError } = await supabase.from('raw_materials').insert(rows);
+    if (insertError) throw insertError;
+  },
+
+  async updateRawMaterialQty(id: string, qty: number): Promise<void> {
+    const { error } = await supabase.from('raw_materials').update({ qty }).eq('id', id);
+    if (error) throw error;
+  },
+
+  async addRawMaterial(size: string, color: string, qty: number): Promise<RawMaterial> {
+    const { data, error } = await supabase
+      .from('raw_materials')
+      .insert({ size, color, qty })
+      .select('*')
+      .single();
+    if (error) throw error;
+    return mapRawMaterialFromDb(data);
   }
 };

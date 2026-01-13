@@ -69,3 +69,10 @@ export interface InventoryLog {
   userName: string;
   orderId?: string;
 }
+
+export interface RawMaterial {
+  id: string;
+  size: string;
+  color: string;
+  qty: number;
+}
