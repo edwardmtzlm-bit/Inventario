@@ -10,6 +10,8 @@ const mapProductFromDb = (row: any): Product => ({
   name: row.name,
   category: row.category,
   stock: row.stock,
+  amazonStock: row.amazon_stock ?? 0,
+  amazonEnabled: row.amazon_enabled ?? false,
   minStock: row.min_stock,
   price: Number(row.price)
 });
@@ -65,6 +67,8 @@ export const supabaseService = {
       name: p.name,
       category: p.category,
       stock: p.stock,
+      amazon_stock: p.amazonStock,
+      amazon_enabled: p.amazonEnabled,
       min_stock: p.minStock,
       price: p.price
     }));
@@ -81,6 +85,8 @@ export const supabaseService = {
         name: product.name,
         category: product.category || 'Otros',
         stock: product.stock || 0,
+        amazon_stock: product.amazonStock || 0,
+        amazon_enabled: product.amazonEnabled ?? false,
         min_stock: product.minStock || 5,
         price: product.price || 0
       })
@@ -92,6 +98,24 @@ export const supabaseService = {
 
   async updateProductStock(id: string, newStock: number): Promise<void> {
     const { error } = await supabase.from('products').update({ stock: newStock }).eq('id', id);
+    if (error) throw error;
+  },
+
+  async updateProductStocks(id: string, stock: number, amazonStock: number): Promise<void> {
+    const { error } = await supabase
+      .from('products')
+      .update({ stock, amazon_stock: amazonStock })
+      .eq('id', id);
+    if (error) throw error;
+  },
+
+  async updateAmazonStock(id: string, amazonStock: number): Promise<void> {
+    const { error } = await supabase.from('products').update({ amazon_stock: amazonStock }).eq('id', id);
+    if (error) throw error;
+  },
+
+  async setAmazonEnabled(id: string, amazonEnabled: boolean): Promise<void> {
+    const { error } = await supabase.from('products').update({ amazon_enabled: amazonEnabled }).eq('id', id);
     if (error) throw error;
   },
 

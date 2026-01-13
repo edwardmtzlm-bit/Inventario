@@ -64,6 +64,8 @@ const Layout: React.FC<{ children: React.ReactNode, user: User | null, onLogout:
         <NavItem to="/orders" icon="fa-file-invoice" label="Órdenes" />
         <NavItem to="/scan" icon="fa-qrcode" label="Escanear" />
         <NavItem to="/logs" icon="fa-history" label="Logs" />
+        <NavItem to="/reports" icon="fa-chart-line" label="Reporte" />
+        <NavItem to="/amazon" icon="fa-boxes" label="Amazon" />
       </nav>
     </div>
   );
@@ -160,6 +162,7 @@ const LoginView: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) => 
 
 const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: InventoryLog[] }> = ({ products, orders, logs }) => {
   const lowStockItems = products.filter(p => p.stock <= p.minStock);
+  const lowAmazonItems = products.filter(p => p.amazonEnabled && p.amazonStock <= AMAZON_LOW_STOCK);
   const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
   const completedToday = orders.filter(o => (o.status !== OrderStatus.PENDING) && new Date(o.deliveredAt || o.createdAt).toDateString() === new Date().toDateString());
 
@@ -195,6 +198,25 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
               <div key={p.id} className="bg-red-50 p-3 rounded-xl border border-red-100 flex justify-between items-center">
                 <span className="text-sm font-bold text-slate-900">{p.name}</span>
                 <span className="text-xs font-black text-red-600">{p.stock} unid.</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-center py-8 text-xs text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">Sin alertas</p>
+        )}
+      </section>
+
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-slate-800">Alertas Amazon</h2>
+          <Link to="/amazon" className="text-xs text-indigo-600 font-bold">Ver todo</Link>
+        </div>
+        {lowAmazonItems.length > 0 ? (
+          <div className="space-y-2">
+            {lowAmazonItems.slice(0, 3).map(p => (
+              <div key={p.id} className="bg-amber-50 p-3 rounded-xl border border-amber-100 flex justify-between items-center">
+                <span className="text-sm font-bold text-slate-900">{p.name}</span>
+                <span className="text-xs font-black text-amber-600">{p.amazonStock} unid.</span>
               </div>
             ))}
           </div>
@@ -602,6 +624,353 @@ const LogsView: React.FC<{ logs: InventoryLog[] }> = ({ logs }) => (
   </div>
 );
 
+const getMonthKey = (timestamp: number) => {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
+
+type ReportRow = { id: string; name: string; units: number; sales: number };
+
+const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ logs, products }) => {
+  const productPriceMap = new Map<string, number>(products.map(p => [p.id, p.price]));
+  const exitLogs = logs.filter(l => l.type === LogType.EXIT || l.type === LogType.AMAZON_SALE);
+  const monthKeys = Array.from(new Set(exitLogs.map(l => getMonthKey(l.timestamp)))).sort().reverse();
+  const [selectedMonth, setSelectedMonth] = useState(monthKeys[0] || getMonthKey(Date.now()));
+
+  const monthLogs = exitLogs.filter(l => getMonthKey(l.timestamp) === selectedMonth);
+  const productTotals: Map<string, ReportRow> = new Map();
+  for (const log of monthLogs) {
+    const existing = productTotals.get(log.productId);
+    const entry = existing || { id: log.productId, name: log.productName, units: 0, sales: 0 };
+    const price = productPriceMap.get(log.productId) ?? 0;
+    entry.units += log.quantity;
+    entry.sales += log.quantity * price;
+    productTotals.set(log.productId, entry);
+  }
+
+  const rows: ReportRow[] = Array.from(productTotals.values()).sort((a, b) => b.sales - a.sales);
+  const totalUnits = rows.reduce((sum, r) => sum + r.units, 0);
+  const totalSales = rows.reduce((sum, r) => sum + r.sales, 0);
+
+  const downloadCsv = () => {
+    if (rows.length === 0) {
+      alert('No hay movimientos para este mes');
+      return;
+    }
+    const header = ['Producto', 'Unidades', 'Ventas'];
+    const body = rows.map(r => [r.name, r.units.toString(), r.sales.toFixed(2)]);
+    const lines = [header, ...body].map(cols => cols.map(v => `"${v.replace(/"/g, '""')}"`).join(','));
+    const csv = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `reporte-${selectedMonth}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-black text-slate-800">Reporte Mensual</h2>
+        <button
+          onClick={downloadCsv}
+          className="text-xs font-bold px-3 py-2 rounded-xl bg-slate-900 text-white"
+        >
+          Descargar CSV
+        </button>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Mes</label>
+        <select
+          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+          value={selectedMonth}
+          onChange={e => setSelectedMonth(e.target.value)}
+        >
+          {monthKeys.length === 0 ? (
+            <option value={selectedMonth}>{selectedMonth}</option>
+          ) : (
+            monthKeys.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))
+          )}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+          <p className="text-[10px] font-bold text-slate-400 uppercase">Unidades</p>
+          <p className="text-2xl font-black text-slate-800">{totalUnits}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+          <p className="text-[10px] font-bold text-slate-400 uppercase">Ventas</p>
+          <p className="text-2xl font-black text-emerald-600">${totalSales.toFixed(2)}</p>
+        </div>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+        <h3 className="text-sm font-bold text-slate-700 mb-3">Detalle por producto</h3>
+        {rows.length === 0 ? (
+          <p className="text-xs text-slate-400">Sin movimientos para este mes.</p>
+        ) : (
+          <div className="space-y-3">
+            {rows.map(r => (
+              <div key={r.name} className="flex items-center justify-between border-b border-slate-50 pb-2">
+                <div>
+                  <p className="text-sm font-bold text-slate-800">{r.name}</p>
+                  <p className="text-[10px] text-slate-400">Unidades: {r.units}</p>
+                </div>
+                <p className="text-sm font-black text-emerald-600">${r.sales.toFixed(2)}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const AMAZON_LOW_STOCK = 100;
+
+const AmazonView: React.FC<{
+  products: Product[];
+  onTransfer: (productId: string, qty: number) => Promise<void>;
+  onSale: (productId: string, qty: number) => Promise<void>;
+  onEnable: (productId: string) => Promise<void>;
+  onCreate: (product: Partial<Product>) => Promise<void>;
+}> = ({ products, onTransfer, onSale, onEnable, onCreate }) => {
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const [enableProduct, setEnableProduct] = useState('');
+  const [transferQty, setTransferQty] = useState(1);
+  const [saleQty, setSaleQty] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [newAmazon, setNewAmazon] = useState({ sku: '', name: '', category: CATEGORIES[0], amazonStock: 0, price: 0 });
+
+  const amazonProducts = products.filter(p => p.amazonEnabled);
+  const nonAmazonProducts = products.filter(p => !p.amazonEnabled);
+
+  const handleTransfer = async () => {
+    if (!selectedProduct) return alert('Selecciona un producto');
+    if (!Number.isFinite(transferQty) || transferQty <= 0) return alert('Cantidad inválida');
+    setBusy(true);
+    try {
+      await onTransfer(selectedProduct, transferQty);
+      setTransferQty(1);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSale = async () => {
+    if (!selectedProduct) return alert('Selecciona un producto');
+    if (!Number.isFinite(saleQty) || saleQty <= 0) return alert('Cantidad inválida');
+    setBusy(true);
+    try {
+      await onSale(selectedProduct, saleQty);
+      setSaleQty(1);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEnable = async () => {
+    if (!enableProduct) return alert('Selecciona un producto');
+    setBusy(true);
+    try {
+      await onEnable(enableProduct);
+      setEnableProduct('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateAmazon = async () => {
+    if (!newAmazon.name || !newAmazon.sku) return alert('Faltan datos');
+    setBusy(true);
+    try {
+      await onCreate({
+        sku: newAmazon.sku,
+        name: newAmazon.name,
+        category: newAmazon.category,
+        stock: 0,
+        amazonStock: newAmazon.amazonStock || 0,
+        amazonEnabled: true,
+        minStock: 5,
+        price: newAmazon.price || 0
+      });
+      setNewAmazon({ sku: '', name: '', category: CATEGORIES[0], amazonStock: 0, price: 0 });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-black text-slate-800">Amazon</h2>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Habilitar producto existente</label>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <select
+            className="w-full sm:flex-1 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={enableProduct}
+            onChange={e => setEnableProduct(e.target.value)}
+          >
+            <option value="">Seleccionar...</option>
+            {nonAmazonProducts.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name} (Local: {p.stock})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleEnable}
+            disabled={busy}
+            className="w-full sm:w-auto px-4 py-3 bg-slate-800 text-white rounded-xl font-bold disabled:opacity-60"
+          >
+            Habilitar
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Crear producto Amazon</label>
+        <div className="space-y-2">
+          <input
+            placeholder="SKU"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl"
+            value={newAmazon.sku}
+            onChange={e => setNewAmazon(prev => ({ ...prev, sku: e.target.value }))}
+          />
+          <input
+            placeholder="Nombre"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl"
+            value={newAmazon.name}
+            onChange={e => setNewAmazon(prev => ({ ...prev, name: e.target.value }))}
+          />
+          <div className="flex space-x-2">
+            <select
+              className="flex-1 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={newAmazon.category}
+              onChange={e => setNewAmazon(prev => ({ ...prev, category: e.target.value }))}
+            >
+              {CATEGORIES.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <input
+              type="number"
+              placeholder="Precio"
+              className="w-28 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+              value={newAmazon.price}
+              onChange={e => setNewAmazon(prev => ({ ...prev, price: parseFloat(e.target.value) || 0 }))}
+            />
+          </div>
+          <input
+            type="number"
+            placeholder="Stock Amazon"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={newAmazon.amazonStock}
+            onChange={e => setNewAmazon(prev => ({ ...prev, amazonStock: parseInt(e.target.value) || 0 }))}
+          />
+          <button
+            onClick={handleCreateAmazon}
+            disabled={busy}
+            className="w-full bg-indigo-600 text-white rounded-xl font-bold py-3 disabled:opacity-60"
+          >
+            Crear en Amazon
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Producto</label>
+        <select
+          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+          value={selectedProduct}
+          onChange={e => setSelectedProduct(e.target.value)}
+        >
+          <option value="">Seleccionar...</option>
+          {amazonProducts.map(p => (
+            <option key={p.id} value={p.id}>
+              {p.name} (Local: {p.stock}, Amazon: {p.amazonStock})
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Enviar a Amazon</label>
+        <div className="flex space-x-2">
+          <input
+            type="number"
+            min="1"
+            className="w-24 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={transferQty}
+            onChange={e => setTransferQty(parseInt(e.target.value) || 1)}
+          />
+          <button
+            onClick={handleTransfer}
+            disabled={busy}
+            className="flex-1 bg-indigo-600 text-white rounded-xl font-bold transition-transform active:scale-95 disabled:opacity-60"
+          >
+            Enviar
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Registrar venta Amazon</label>
+        <div className="flex space-x-2">
+          <input
+            type="number"
+            min="1"
+            className="w-24 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={saleQty}
+            onChange={e => setSaleQty(parseInt(e.target.value) || 1)}
+          />
+          <button
+            onClick={handleSale}
+            disabled={busy}
+            className="flex-1 bg-emerald-600 text-white rounded-xl font-bold transition-transform active:scale-95 disabled:opacity-60"
+          >
+            Registrar
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+        <h3 className="text-sm font-bold text-slate-700 mb-3">Inventario Amazon</h3>
+        <div className="space-y-3">
+          {amazonProducts.map(p => (
+            <div key={p.id} className="flex items-center justify-between border-b border-slate-50 pb-2">
+              <div>
+                <p className="text-sm font-bold text-slate-800">{p.name}</p>
+                <p className="text-[10px] text-slate-400">
+                  Amazon: {p.amazonStock} · Local: {p.stock}
+                </p>
+              </div>
+              {p.amazonStock <= AMAZON_LOW_STOCK ? (
+                <span className="text-[10px] font-black px-2 py-1 rounded uppercase bg-rose-100 text-rose-700">
+                  Bajo stock
+                </span>
+              ) : (
+                <span className="text-[10px] font-black px-2 py-1 rounded uppercase bg-emerald-100 text-emerald-700">
+                  OK
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Main App Logic ---
 
 export default function App() {
@@ -834,6 +1203,93 @@ export default function App() {
     }
   };
 
+  const transferToAmazon = async (productId: string, qty: number): Promise<void> => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    if (!product.amazonEnabled) {
+      alert(`El producto ${product.name} no está habilitado para Amazon`);
+      return;
+    }
+    if (product.stock < qty) {
+      alert(`Stock insuficiente para ${product.name}`);
+      return;
+    }
+    const newLocalStock = product.stock - qty;
+    const newAmazonStock = product.amazonStock + qty;
+    const log: InventoryLog = {
+      id: Math.random().toString(36).slice(2, 9),
+      timestamp: Date.now(),
+      type: LogType.AMAZON_TRANSFER,
+      productId: product.id,
+      productName: product.name,
+      quantity: qty,
+      userId: user?.id || 'u1',
+      userName: user?.name || 'Admin'
+    };
+
+    try {
+      await supabaseService.updateProductStocks(product.id, newLocalStock, newAmazonStock);
+      await supabaseService.addLog(log);
+      setProducts(prev => prev.map(p => p.id === product.id ? { ...p, stock: newLocalStock, amazonStock: newAmazonStock } : p));
+      setLogs(prev => [log, ...prev]);
+    } catch (err) {
+      alert('No se pudo transferir a Amazon');
+    }
+  };
+
+  const recordAmazonSale = async (productId: string, qty: number): Promise<void> => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    if (!product.amazonEnabled) {
+      alert(`El producto ${product.name} no está habilitado para Amazon`);
+      return;
+    }
+    if (product.amazonStock < qty) {
+      alert(`Stock Amazon insuficiente para ${product.name}`);
+      return;
+    }
+    const newAmazonStock = product.amazonStock - qty;
+    const log: InventoryLog = {
+      id: Math.random().toString(36).slice(2, 9),
+      timestamp: Date.now(),
+      type: LogType.AMAZON_SALE,
+      productId: product.id,
+      productName: product.name,
+      quantity: qty,
+      userId: user?.id || 'u1',
+      userName: user?.name || 'Admin'
+    };
+
+    try {
+      await supabaseService.updateAmazonStock(product.id, newAmazonStock);
+      await supabaseService.addLog(log);
+      setProducts(prev => prev.map(p => p.id === product.id ? { ...p, amazonStock: newAmazonStock } : p));
+      setLogs(prev => [log, ...prev]);
+    } catch (err) {
+      alert('No se pudo registrar la venta Amazon');
+    }
+  };
+
+  const enableAmazon = async (productId: string): Promise<void> => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    try {
+      await supabaseService.setAmazonEnabled(product.id, true);
+      setProducts(prev => prev.map(p => p.id === product.id ? { ...p, amazonEnabled: true } : p));
+    } catch (err) {
+      alert('No se pudo habilitar para Amazon');
+    }
+  };
+
+  const createAmazonProduct = async (product: Partial<Product>): Promise<void> => {
+    try {
+      const created = await supabaseService.addProduct(product);
+      setProducts(prev => [...prev, created]);
+    } catch (err) {
+      alert('No se pudo crear el producto Amazon');
+    }
+  };
+
   if (!user) return <LoginView onLogin={setUser} />;
 
   return (
@@ -850,23 +1306,25 @@ export default function App() {
         ) : (
           <Routes>
             <Route path="/" element={<Dashboard products={products} orders={orders} logs={logs} />} />
-            <Route
-              path="/inventory"
-              element={
-                <InventoryListView
-                  products={products}
-                  onAddStock={addStock}
-                  onAddProduct={p => {
-                    const payload: Partial<Product> = {
-                      sku: p.sku || '?',
-                      name: p.name || '?',
-                      category: p.category || 'Otros',
-                      stock: p.stock || 0,
-                      minStock: p.minStock || 5,
-                      price: p.price || 0
-                    };
-                    void supabaseService.addProduct(payload)
-                      .then(newProduct => setProducts(prev => [...prev, newProduct]))
+          <Route
+            path="/inventory"
+            element={
+              <InventoryListView
+                products={products}
+                onAddStock={addStock}
+                onAddProduct={p => {
+                  const payload: Partial<Product> = {
+                    sku: p.sku || '?',
+                    name: p.name || '?',
+                    category: p.category || 'Otros',
+                    stock: p.stock || 0,
+                    amazonStock: 0,
+                    amazonEnabled: false,
+                    minStock: p.minStock || 5,
+                    price: p.price || 0
+                  };
+                  void supabaseService.addProduct(payload)
+                    .then(newProduct => setProducts(prev => [...prev, newProduct]))
                       .catch(() => alert('No se pudo crear el producto'));
                   }}
                   onDeleteProduct={id => {
@@ -879,9 +1337,11 @@ export default function App() {
             />
             <Route path="/orders" element={<OrdersListView orders={orders} />} />
             <Route path="/orders/new" element={<CreateOrderView products={products} onCreate={createOrder} />} />
-          <Route path="/orders/:id" element={<OrderRouteWrapper orders={orders} onFulfill={fulfillOrder} onDelete={deleteOrder} />} />
+            <Route path="/orders/:id" element={<OrderRouteWrapper orders={orders} onFulfill={fulfillOrder} onDelete={deleteOrder} />} />
             <Route path="/scan" element={<ScannerWrapper />} />
             <Route path="/logs" element={<LogsView logs={logs} />} />
+            <Route path="/reports" element={<ReportsView logs={logs} products={products} />} />
+            <Route path="/amazon" element={<AmazonRouteWrapper products={products} onTransfer={transferToAmazon} onSale={recordAmazonSale} onEnable={enableAmazon} onCreate={createAmazonProduct} />} />
           </Routes>
         )}
       </Layout>
@@ -898,6 +1358,22 @@ const OrderRouteWrapper = ({ orders, onFulfill, onDelete }: { orders: Order[], o
   if (!order) return <div className="p-4 text-center text-slate-400">Orden no encontrada</div>;
   return <OrderDetailView order={order} onComplete={s => { onFulfill(order.id, s); navigate('/orders'); }} onDelete={onDelete} />;
 };
+
+const AmazonRouteWrapper = ({
+  products,
+  onTransfer,
+  onSale,
+  onEnable,
+  onCreate
+}: {
+  products: Product[];
+  onTransfer: (id: string, qty: number) => Promise<void>;
+  onSale: (id: string, qty: number) => Promise<void>;
+  onEnable: (id: string) => Promise<void>;
+  onCreate: (product: Partial<Product>) => Promise<void>;
+}) => (
+  <AmazonView products={products} onTransfer={onTransfer} onSale={onSale} onEnable={onEnable} onCreate={onCreate} />
+);
 
 const ScannerWrapper = () => {
   const navigate = useNavigate();

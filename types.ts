@@ -10,6 +10,8 @@ export interface Product {
   name: string;
   category: string;
   stock: number;
+  amazonStock: number;
+  amazonEnabled: boolean;
   minStock: number;
   price: number;
 }
@@ -51,7 +53,9 @@ export interface Order {
 
 export enum LogType {
   ENTRY = 'ENTRY',
-  EXIT = 'EXIT'
+  EXIT = 'EXIT',
+  AMAZON_SALE = 'AMAZON_SALE',
+  AMAZON_TRANSFER = 'AMAZON_TRANSFER'
 }
 
 export interface InventoryLog {
