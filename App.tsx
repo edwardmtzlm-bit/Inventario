@@ -1868,8 +1868,13 @@ export default function App() {
 
       if (existing) {
         const newStock = existing.stock + qty;
-        await supabaseService.updateProductStock(existing.id, newStock);
-        setProducts(prev => prev.map(p => p.id === existing.id ? { ...p, stock: newStock } : p));
+        const nextPrice = existing.price > 0 ? existing.price : SHIRT_PRICE;
+        if (existing.price > 0) {
+          await supabaseService.updateProductStock(existing.id, newStock);
+        } else {
+          await supabaseService.updateProduct(existing.id, { stock: newStock, price: nextPrice });
+        }
+        setProducts(prev => prev.map(p => p.id === existing.id ? { ...p, stock: newStock, price: nextPrice } : p));
       } else {
         const created = await supabaseService.addProduct({
           sku,

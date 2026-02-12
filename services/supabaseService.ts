@@ -111,6 +111,16 @@ export const supabaseService = {
     if (error) throw error;
   },
 
+  async updateProduct(id: string, fields: Partial<Pick<Product, 'stock' | 'price' | 'amazonStock' | 'amazonEnabled'>>): Promise<void> {
+    const payload: Record<string, any> = {};
+    if (typeof fields.stock === 'number') payload.stock = fields.stock;
+    if (typeof fields.price === 'number') payload.price = fields.price;
+    if (typeof fields.amazonStock === 'number') payload.amazon_stock = fields.amazonStock;
+    if (typeof fields.amazonEnabled === 'boolean') payload.amazon_enabled = fields.amazonEnabled;
+    const { error } = await supabase.from('products').update(payload).eq('id', id);
+    if (error) throw error;
+  },
+
   async updateProductStocks(id: string, stock: number, amazonStock: number): Promise<void> {
     const { error } = await supabase
       .from('products')
