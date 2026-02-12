@@ -14,6 +14,7 @@ const DELETE_PASSWORD = import.meta.env.VITE_DELETE_PASSWORD as string | undefin
 
 const AMAZON_LOW_STOCK = 100;
 const RAW_LOW_STOCK = 3;
+const SHIRT_PRICE = 349;
 const RAW_SIZES = ['S', 'M', 'L', 'XL'];
 const RAW_COLORS = ['Blanco', 'Negro'];
 const AMAZON_DESIGNS = [
@@ -46,6 +47,27 @@ const buildAmazonSku = (design: string, size: string, color: string) => {
 const buildAmazonName = (design: string, size: string, color: string) => {
   return `${design} - ${size} - ${color}`;
 };
+
+const BUNDLES = [
+  {
+    id: 'BND-001',
+    name: 'Libro Poder Personal + Playera Ovejas Negras',
+    price: 650,
+    requires: 'shirt'
+  },
+  {
+    id: 'BND-002',
+    name: 'Libro Poder Personal + Taza',
+    price: 495,
+    requires: 'mug'
+  },
+  {
+    id: 'BND-003',
+    name: 'Libro Poder Personal + Libro Los 10 Principios de la Lucidez',
+    price: 660,
+    requires: 'book'
+  }
+];
 // --- Components ---
 
 const Layout: React.FC<{ children: React.ReactNode, user: User | null, onLogout: () => void }> = ({ children, user, onLogout }) => {
@@ -214,8 +236,11 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
   );
   const lowRawItems = rawAlertItems.filter(r => r.qty <= RAW_LOW_STOCK);
   const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
+  const pendingByAge = [...pendingOrders].sort((a, b) => a.createdAt - b.createdAt);
+  const pendingNames = pendingByAge.map(o => o.recipientName).filter(Boolean);
   const completedToday = orders.filter(o => (o.status !== OrderStatus.PENDING) && new Date(o.deliveredAt || o.createdAt).toDateString() === new Date().toDateString());
   const [showAllRawAlerts, setShowAllRawAlerts] = useState(false);
+  const [showAllPendingNames, setShowAllPendingNames] = useState(false);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -237,6 +262,27 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Salidas Hoy</span>
         </div>
       </div>
+
+      {pendingNames.length > 0 ? (
+        <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-bold text-slate-800">
+              Pendientes: {pendingNames.length}
+            </h2>
+            {pendingNames.length > 3 ? (
+              <button
+                onClick={() => setShowAllPendingNames(prev => !prev)}
+                className="text-xs text-indigo-600 font-bold"
+              >
+                {showAllPendingNames ? 'Ver menos' : 'Ver más'}
+              </button>
+            ) : null}
+          </div>
+          <p className="text-sm text-slate-700 font-medium">
+            {(showAllPendingNames ? pendingNames : pendingNames.slice(0, 3)).join(', ')}
+          </p>
+        </section>
+      ) : null}
 
       <section>
         <div className="flex items-center justify-between mb-3">
@@ -309,12 +355,46 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
 
 const ProductFormModal: React.FC<{ isOpen: boolean, onClose: () => void, onSave: (p: Partial<Product>) => void }> = ({ isOpen, onClose, onSave }) => {
   const [formData, setFormData] = useState({ sku: '', name: '', category: CATEGORIES[0], stock: 0, minStock: 5, price: 0 });
+  const [bundleId, setBundleId] = useState(BUNDLES[0]?.id ?? '');
+  const activeBundle = BUNDLES.find(bundle => bundle.id === bundleId);
+
+  useEffect(() => {
+    if (formData.category !== 'Bundle' || !activeBundle) return;
+    setFormData(prev => ({
+      ...prev,
+      sku: activeBundle.id,
+      name: activeBundle.name,
+      price: activeBundle.price
+    }));
+  }, [formData.category, activeBundle]);
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
       <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 space-y-4">
         <h3 className="text-lg font-black text-slate-800">Nuevo Producto</h3>
         <div className="space-y-3">
+          <select
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+            value={formData.category}
+            onChange={e => setFormData({ ...formData, category: e.target.value })}
+          >
+            {CATEGORIES.map(category => (
+              <option key={category} value={category}>{category}</option>
+            ))}
+          </select>
+          {formData.category === 'Bundle' ? (
+            <select
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+              value={bundleId}
+              onChange={e => setBundleId(e.target.value)}
+            >
+              {BUNDLES.map(bundle => (
+                <option key={bundle.id} value={bundle.id}>
+                  {bundle.name} - ${bundle.price}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <input placeholder="SKU (ej: TAZ-123)" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} />
           <input placeholder="Nombre del Artículo" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
           <div className="flex space-x-2">
@@ -324,7 +404,13 @@ const ProductFormModal: React.FC<{ isOpen: boolean, onClose: () => void, onSave:
             </div>
             <div className="w-1/2">
               <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Precio</label>
-              <input type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl" onChange={e => setFormData({...formData, price: parseFloat(e.target.value) || 0})} />
+              <input
+                type="number"
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+                value={formData.price}
+                onChange={e => setFormData({...formData, price: parseFloat(e.target.value) || 0})}
+                readOnly={formData.category === 'Bundle'}
+              />
             </div>
           </div>
         </div>
@@ -520,7 +606,65 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
   const [trackingNumber, setTrackingNumber] = useState('');
   const [sellerName, setSellerName] = useState('');
   const [authorizedBy, setAuthorizedBy] = useState('');
+  const [bundleId, setBundleId] = useState(BUNDLES[0]?.id ?? '');
+  const [bundleShirtId, setBundleShirtId] = useState('');
+  const [bundleMugId, setBundleMugId] = useState('');
   const navigate = useNavigate();
+  const bundle = BUNDLES.find(b => b.id === bundleId);
+  const shirts = products.filter(p => p.sku.startsWith('AMZ-'));
+  const mugs = products.filter(p => p.sku.startsWith('TAZ-') || p.name.toLowerCase().includes('taza'));
+  const powerBook = products.find(p => p.sku === 'LIB-001');
+  const lucidezBook = products.find(p => p.sku === 'LIB-002');
+
+  const addToCart = (product: Product, qty: number) => {
+    setCart(prev => {
+      const existing = prev.find(item => item.productId === product.id);
+      if (existing) {
+        return prev.map(item =>
+          item.productId === product.id ? { ...item, quantity: item.quantity + qty } : item
+        );
+      }
+      return [...prev, { productId: product.id, name: product.name, quantity: qty }];
+    });
+  };
+
+  const handleAddBundle = () => {
+    if (!bundle || !powerBook) {
+      alert('No se encontró el bundle o el libro base.');
+      return;
+    }
+
+    if (bundle.requires === 'shirt') {
+      const shirt = products.find(p => p.id === bundleShirtId);
+      if (!shirt) {
+        alert('Selecciona una playera válida para el bundle.');
+        return;
+      }
+      addToCart(powerBook, 1);
+      addToCart(shirt, 1);
+      return;
+    }
+
+    if (bundle.requires === 'mug') {
+      const mug = products.find(p => p.id === bundleMugId);
+      if (!mug) {
+        alert('Selecciona una taza válida para el bundle.');
+        return;
+      }
+      addToCart(powerBook, 1);
+      addToCart(mug, 1);
+      return;
+    }
+
+    if (bundle.requires === 'book') {
+      if (!lucidezBook) {
+        alert('No se encontró el libro de lucidez.');
+        return;
+      }
+      addToCart(powerBook, 1);
+      addToCart(lucidezBook, 1);
+    }
+  };
 
   const handleCreate = () => {
     if (!recipient || cart.length === 0) return alert("Faltan datos obligatorios (Cliente y Productos)");
@@ -607,6 +751,47 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
         </div>
       </div>
 
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">AGREGAR BUNDLE</label>
+        <select
+          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+          value={bundleId}
+          onChange={e => setBundleId(e.target.value)}
+        >
+          {BUNDLES.map(b => (
+            <option key={b.id} value={b.id}>{b.name}</option>
+          ))}
+        </select>
+        <p className="text-xs text-slate-500 font-medium">Precio: ${bundle?.price ?? 0}</p>
+        {bundle?.requires === 'shirt' ? (
+          <select
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={bundleShirtId}
+            onChange={e => setBundleShirtId(e.target.value)}
+          >
+            <option value="">Selecciona playera</option>
+            {shirts.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        ) : null}
+        {bundle?.requires === 'mug' ? (
+          <select
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={bundleMugId}
+            onChange={e => setBundleMugId(e.target.value)}
+          >
+            <option value="">Selecciona taza</option>
+            {mugs.map(m => (
+              <option key={m.id} value={m.id}>{m.name}</option>
+            ))}
+          </select>
+        ) : null}
+        <button onClick={handleAddBundle} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold">
+          Agregar bundle
+        </button>
+      </div>
+
       <div className="space-y-2">
         {cart.length > 0 && <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">LISTA DE SALIDA</label>}
         {cart.map(item => (
@@ -673,6 +858,7 @@ const OrdersListView: React.FC<{ orders: Order[] }> = ({ orders }) => {
 
 const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) => void, onDelete: (orderId: string) => Promise<boolean> }> = ({ order, onComplete, onDelete }) => {
   const [showFulfillment, setShowFulfillment] = useState(false);
+  const qrPrintRef = React.useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   if (!order) return null;
 
@@ -683,6 +869,45 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
     }
   };
 
+  const handlePrintQr = () => {
+    const qrImage = qrPrintRef.current?.querySelector('img');
+    if (!qrImage?.src) {
+      alert('QR no disponible para imprimir');
+      return;
+    }
+    const printWindow = window.open('', '_blank', 'width=480,height=640');
+    if (!printWindow) {
+      alert('Permite ventanas emergentes para imprimir');
+      return;
+    }
+    const escapedName = order.recipientName.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>QR ${escapedName}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 24px; text-align: center; }
+            img { width: 220px; height: 220px; }
+            .name { margin-top: 12px; font-size: 18px; font-weight: 700; }
+          </style>
+        </head>
+        <body>
+          <img src="${qrImage.src}" alt="QR" />
+          <div class="name">${escapedName}</div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    const image = printWindow.document.images[0];
+    image.onload = () => {
+      printWindow.focus();
+      printWindow.print();
+      printWindow.close();
+    };
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex items-center space-x-2">
@@ -691,9 +916,16 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
       </div>
 
       {order.type === 'PICKUP' && order.status === OrderStatus.PENDING && (
-        <div className="bg-white p-6 rounded-3xl shadow-lg text-center border border-slate-100">
+        <div ref={qrPrintRef} className="bg-white p-6 rounded-3xl shadow-lg text-center border border-slate-100">
           <QRGenerator value={order.id} />
+          <p className="mt-3 text-base font-semibold text-slate-800">{order.recipientName}</p>
           <p className="text-[10px] font-bold text-slate-400 mt-2 uppercase tracking-widest">CÓDIGO DE RECOLECCIÓN</p>
+          <button
+            onClick={handlePrintQr}
+            className="mt-4 w-full py-2 text-sm font-bold text-indigo-700 bg-indigo-50 rounded-xl border border-indigo-100 hover:bg-indigo-100"
+          >
+            Imprimir QR
+          </button>
         </div>
       )}
 
@@ -837,11 +1069,33 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
   const productPriceMap = new Map<string, number>(products.map(p => [p.id, p.price]));
   const exitLogs = logs.filter(l => l.type === LogType.EXIT || l.type === LogType.AMAZON_SALE);
   const monthKeys = Array.from(new Set(exitLogs.map(l => getMonthKey(l.timestamp)))).sort().reverse();
-  const [selectedMonth, setSelectedMonth] = useState(monthKeys[0] || getMonthKey(Date.now()));
+  const availableYears = Array.from(new Set(exitLogs.map(l => new Date(l.timestamp).getFullYear()))).sort((a, b) => b - a);
+  const currentYear = new Date().getFullYear();
+  const [selectedYear, setSelectedYear] = useState<number>(availableYears.includes(currentYear) ? currentYear : (availableYears[0] || currentYear));
+  const [selectedMonth, setSelectedMonth] = useState<string>(String(new Date().getMonth() + 1).padStart(2, '0'));
+  const months = [
+    { value: '01', label: 'Enero' },
+    { value: '02', label: 'Febrero' },
+    { value: '03', label: 'Marzo' },
+    { value: '04', label: 'Abril' },
+    { value: '05', label: 'Mayo' },
+    { value: '06', label: 'Junio' },
+    { value: '07', label: 'Julio' },
+    { value: '08', label: 'Agosto' },
+    { value: '09', label: 'Septiembre' },
+    { value: '10', label: 'Octubre' },
+    { value: '11', label: 'Noviembre' },
+    { value: '12', label: 'Diciembre' }
+  ];
 
-  const monthLogs = exitLogs.filter(l => getMonthKey(l.timestamp) === selectedMonth);
+  const periodLogs = exitLogs.filter(l => {
+    const date = new Date(l.timestamp);
+    if (date.getFullYear() !== selectedYear) return false;
+    if (selectedMonth === 'all') return true;
+    return String(date.getMonth() + 1).padStart(2, '0') === selectedMonth;
+  });
   const productTotals: Map<string, ReportRow> = new Map();
-  for (const log of monthLogs) {
+  for (const log of periodLogs) {
     const existing = productTotals.get(log.productId);
     const entry = existing || { id: log.productId, name: log.productName, units: 0, sales: 0 };
     const price = productPriceMap.get(log.productId) ?? 0;
@@ -851,12 +1105,15 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
   }
 
   const rows: ReportRow[] = Array.from(productTotals.values()).sort((a, b) => b.sales - a.sales);
+  const topRows = rows.slice(0, 5);
+  const maxSales = topRows.reduce((max, row) => Math.max(max, row.sales), 0);
   const totalUnits = rows.reduce((sum, r) => sum + r.units, 0);
   const totalSales = rows.reduce((sum, r) => sum + r.sales, 0);
+  const periodLabel = selectedMonth === 'all' ? `${selectedYear}` : `${selectedYear}-${selectedMonth}`;
 
   const downloadCsv = () => {
     if (rows.length === 0) {
-      alert('No hay movimientos para este mes');
+      alert('No hay movimientos para este periodo');
       return;
     }
     const header = ['Producto', 'Unidades', 'Ventas'];
@@ -867,7 +1124,7 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `reporte-${selectedMonth}.csv`;
+    link.download = `reporte-${periodLabel}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -875,7 +1132,7 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-black text-slate-800">Reporte Mensual</h2>
+        <h2 className="text-xl font-black text-slate-800">Reporte de Ventas</h2>
         <button
           onClick={downloadCsv}
           className="text-xs font-bold px-3 py-2 rounded-xl bg-slate-900 text-white"
@@ -885,20 +1142,31 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
-        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Mes</label>
+        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Periodo</label>
+        <select
+          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+          value={selectedYear}
+          onChange={e => setSelectedYear(parseInt(e.target.value, 10))}
+        >
+          {availableYears.length === 0 ? (
+            <option value={selectedYear}>{selectedYear}</option>
+          ) : (
+            availableYears.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))
+          )}
+        </select>
         <select
           className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
           value={selectedMonth}
           onChange={e => setSelectedMonth(e.target.value)}
         >
-          {monthKeys.length === 0 ? (
-            <option value={selectedMonth}>{selectedMonth}</option>
-          ) : (
-            monthKeys.map(m => (
-              <option key={m} value={m}>{m}</option>
-            ))
-          )}
+          <option value="all">Todo el año</option>
+          {months.map(m => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
         </select>
+        <p className="text-xs text-slate-400">Periodo seleccionado: {periodLabel}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -913,9 +1181,33 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+        <h3 className="text-sm font-bold text-slate-700 mb-3">Top productos (ventas)</h3>
+        {topRows.length === 0 ? (
+          <p className="text-xs text-slate-400">Sin movimientos para este periodo.</p>
+        ) : (
+          <div className="space-y-3">
+            {topRows.map(row => (
+              <div key={row.id} className="space-y-1">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-600">
+                  <span className="truncate">{row.name}</span>
+                  <span>${row.sales.toFixed(2)}</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-slate-100">
+                  <div
+                    className="h-2 rounded-full bg-indigo-600"
+                    style={{ width: `${maxSales ? (row.sales / maxSales) * 100 : 0}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
         <h3 className="text-sm font-bold text-slate-700 mb-3">Detalle por producto</h3>
         {rows.length === 0 ? (
-          <p className="text-xs text-slate-400">Sin movimientos para este mes.</p>
+          <p className="text-xs text-slate-400">Sin movimientos para este periodo.</p>
         ) : (
           <div className="space-y-3">
             {rows.map(r => (
@@ -1587,7 +1879,7 @@ export default function App() {
           amazonStock: 0,
           amazonEnabled: false,
           minStock: 5,
-          price: 0
+          price: SHIRT_PRICE
         });
         setProducts(prev => [...prev, created]);
       }

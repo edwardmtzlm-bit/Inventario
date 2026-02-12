@@ -18,4 +18,4 @@ export const AUTHORIZED_USER = {
   name: 'Horacio Marchand - Administrador'
 };
 
-export const CATEGORIES = ['Libros', 'Mercancía', 'Papelería', 'Electrónica', 'Otros'];
+export const CATEGORIES = ['Libros', 'Mercancía', 'Bundle', 'Papelería', 'Electrónica', 'Otros'];
