@@ -8,6 +8,7 @@ const mapProductFromDb = (row: any): Product => ({
   id: row.id,
   sku: row.sku,
   name: row.name,
+  imageUrl: row.image_url || row.imageUrl || undefined,
   category: row.category,
   stock: row.stock,
   amazonStock: row.amazon_stock ?? 0,
@@ -75,6 +76,7 @@ export const supabaseService = {
     const rows = INITIAL_PRODUCTS.map((p) => ({
       sku: p.sku,
       name: p.name,
+      image_url: p.imageUrl || null,
       category: p.category,
       stock: p.stock,
       amazon_stock: p.amazonStock,
@@ -88,22 +90,44 @@ export const supabaseService = {
   },
 
   async addProduct(product: Partial<Product>): Promise<Product> {
-    const { data, error } = await supabase
+    const payload = {
+      sku: product.sku,
+      name: product.name,
+      image_url: product.imageUrl || null,
+      category: product.category || 'Otros',
+      stock: product.stock || 0,
+      amazon_stock: product.amazonStock || 0,
+      amazon_enabled: product.amazonEnabled ?? false,
+      min_stock: product.minStock || 5,
+      price: product.price || 0
+    };
+
+    let { data, error } = await supabase
       .from('products')
-      .insert({
-        sku: product.sku,
-        name: product.name,
-        category: product.category || 'Otros',
-        stock: product.stock || 0,
-        amazon_stock: product.amazonStock || 0,
-        amazon_enabled: product.amazonEnabled ?? false,
-        min_stock: product.minStock || 5,
-        price: product.price || 0
-      })
+      .insert(payload)
       .select('*')
       .single();
+
+    // Backward compatibility for DBs where image_url is not created yet.
+    if (error && String(error.message || '').toLowerCase().includes('image_url')) {
+      ({ data, error } = await supabase
+        .from('products')
+        .insert({
+          sku: product.sku,
+          name: product.name,
+          category: product.category || 'Otros',
+          stock: product.stock || 0,
+          amazon_stock: product.amazonStock || 0,
+          amazon_enabled: product.amazonEnabled ?? false,
+          min_stock: product.minStock || 5,
+          price: product.price || 0
+        })
+        .select('*')
+        .single());
+    }
+
     if (error) throw error;
-    return mapProductFromDb(data);
+    return { ...mapProductFromDb(data), imageUrl: mapProductFromDb(data).imageUrl || product.imageUrl };
   },
 
   async updateProductStock(id: string, newStock: number): Promise<void> {
@@ -111,13 +135,24 @@ export const supabaseService = {
     if (error) throw error;
   },
 
-  async updateProduct(id: string, fields: Partial<Pick<Product, 'stock' | 'price' | 'amazonStock' | 'amazonEnabled'>>): Promise<void> {
+  async updateProduct(id: string, fields: Partial<Pick<Product, 'stock' | 'price' | 'amazonStock' | 'amazonEnabled' | 'imageUrl'>>): Promise<void> {
     const payload: Record<string, any> = {};
     if (typeof fields.stock === 'number') payload.stock = fields.stock;
     if (typeof fields.price === 'number') payload.price = fields.price;
     if (typeof fields.amazonStock === 'number') payload.amazon_stock = fields.amazonStock;
     if (typeof fields.amazonEnabled === 'boolean') payload.amazon_enabled = fields.amazonEnabled;
-    const { error } = await supabase.from('products').update(payload).eq('id', id);
+    if (typeof fields.imageUrl === 'string') payload.image_url = fields.imageUrl.trim() ? fields.imageUrl.trim() : null;
+
+    let { error } = await supabase.from('products').update(payload).eq('id', id);
+
+    // Compatibility: some schemas may use camelCase column.
+    if (error && Object.prototype.hasOwnProperty.call(payload, 'image_url')) {
+      const fallbackPayload = { ...payload, imageUrl: payload.image_url };
+      delete fallbackPayload.image_url;
+      const retry = await supabase.from('products').update(fallbackPayload).eq('id', id);
+      error = retry.error;
+    }
+
     if (error) throw error;
   },
 

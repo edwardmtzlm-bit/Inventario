@@ -8,6 +8,7 @@ export interface Product {
   id: string;
   sku: string;
   name: string;
+  imageUrl?: string;
   category: string;
   stock: number;
   amazonStock: number;
@@ -17,14 +18,21 @@ export interface Product {
 }
 
 export interface OrderItem {
+  lineId?: string;
   productId: string;
   name: string;
   quantity: number;
+  unitPrice?: number;
+  affectsStock?: boolean;
+  isBundleCharge?: boolean;
+  bundleId?: string;
+  bundleName?: string;
 }
 
 export enum OrderStatus {
   PENDING = 'PENDING',
   DELIVERED = 'DELIVERED',
+  RETURNED = 'RETURNED',
   SHIPPED = 'SHIPPED',
   COMPLETED_SALE = 'COMPLETED_SALE'
 }

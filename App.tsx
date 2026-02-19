@@ -68,6 +68,49 @@ const BUNDLES = [
     requires: 'book'
   }
 ];
+
+const getOrderItemUnitPrice = (item: OrderItem, productPriceMap: Map<string, number>) => {
+  if (typeof item.unitPrice === 'number') return item.unitPrice;
+  return productPriceMap.get(item.productId) ?? 0;
+};
+
+const getOrderTotal = (order: Order, productPriceMap: Map<string, number>) => {
+  return order.items.reduce((sum, item) => {
+    return sum + item.quantity * getOrderItemUnitPrice(item, productPriceMap);
+  }, 0);
+};
+
+const toLocalDateInputValue = (timestamp = Date.now()) => {
+  const offset = new Date(timestamp).getTimezoneOffset() * 60000;
+  return new Date(timestamp - offset).toISOString().slice(0, 10);
+};
+
+const parseDateInputToTimestamp = (value?: string) => {
+  if (!value) return Date.now();
+  const parts = value.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return Date.now();
+  const [year, month, day] = parts;
+  return new Date(year, month - 1, day, 12, 0, 0, 0).getTime();
+};
+
+const ProductThumb: React.FC<{ name: string; imageUrl?: string; className?: string }> = ({ name, imageUrl, className }) => {
+  const [failed, setFailed] = useState(false);
+  const showImage = Boolean(imageUrl) && !failed;
+  return (
+    <div className={`rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center ${className || 'w-12 h-12'}`}>
+      {showImage ? (
+        <img
+          src={imageUrl}
+          alt={name}
+          className="w-full h-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <i className="fas fa-image text-slate-400 text-sm"></i>
+      )}
+    </div>
+  );
+};
 // --- Components ---
 
 const Layout: React.FC<{ children: React.ReactNode, user: User | null, onLogout: () => void }> = ({ children, user, onLogout }) => {
@@ -238,7 +281,7 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
   const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
   const pendingByAge = [...pendingOrders].sort((a, b) => a.createdAt - b.createdAt);
   const pendingNames = pendingByAge.map(o => o.recipientName).filter(Boolean);
-  const completedToday = orders.filter(o => (o.status !== OrderStatus.PENDING) && new Date(o.deliveredAt || o.createdAt).toDateString() === new Date().toDateString());
+  const completedToday = orders.filter(o => (o.status === OrderStatus.DELIVERED) && new Date(o.deliveredAt || o.createdAt).toDateString() === new Date().toDateString());
   const [showAllRawAlerts, setShowAllRawAlerts] = useState(false);
   const [showAllPendingNames, setShowAllPendingNames] = useState(false);
 
@@ -354,7 +397,7 @@ const Dashboard: React.FC<{ products: Product[], orders: Order[], logs: Inventor
 };
 
 const ProductFormModal: React.FC<{ isOpen: boolean, onClose: () => void, onSave: (p: Partial<Product>) => void }> = ({ isOpen, onClose, onSave }) => {
-  const [formData, setFormData] = useState({ sku: '', name: '', category: CATEGORIES[0], stock: 0, minStock: 5, price: 0 });
+  const [formData, setFormData] = useState({ sku: '', name: '', imageUrl: '', category: CATEGORIES[0], stock: 0, minStock: 5, price: 0 });
   const [bundleId, setBundleId] = useState(BUNDLES[0]?.id ?? '');
   const activeBundle = BUNDLES.find(bundle => bundle.id === bundleId);
 
@@ -397,6 +440,12 @@ const ProductFormModal: React.FC<{ isOpen: boolean, onClose: () => void, onSave:
           ) : null}
           <input placeholder="SKU (ej: TAZ-123)" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} />
           <input placeholder="Nombre del Artículo" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+          <input
+            placeholder="URL de imagen (opcional)"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+            value={formData.imageUrl}
+            onChange={e => setFormData({...formData, imageUrl: e.target.value})}
+          />
           <div className="flex space-x-2">
             <div className="w-1/2">
               <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Stock</label>
@@ -427,12 +476,13 @@ const InventoryListView: React.FC<{
   products: Product[], 
   rawMaterials: RawMaterial[],
   onAddStock: (pid: string, qty: number) => void, 
+  onUpdateProductImage: (pid: string, imageUrl: string) => void,
   onDeleteProduct: (pid: string) => void,
   onAddProduct: (p: Partial<Product>) => void,
   onAddRawStock: (size: string, color: string, qty: number) => void,
   onRemoveRawStock: (size: string, color: string, qty: number) => void,
   onConvertRaw: (design: string, size: string, color: string, qty: number) => void
-}> = ({ products, rawMaterials, onAddStock, onDeleteProduct, onAddProduct, onAddRawStock, onRemoveRawStock, onConvertRaw }) => {
+}> = ({ products, rawMaterials, onAddStock, onUpdateProductImage, onDeleteProduct, onAddProduct, onAddRawStock, onRemoveRawStock, onConvertRaw }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [rawSize, setRawSize] = useState(RAW_SIZES[0]);
@@ -474,16 +524,28 @@ const InventoryListView: React.FC<{
       </div>
       <div className="space-y-3 pb-4">
         {filtered.map(p => (
-          <div key={p.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center">
-            <div className="flex-1">
+          <div key={p.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center gap-3">
+            <ProductThumb name={p.name} imageUrl={p.imageUrl} className="w-14 h-14 shrink-0" />
+            <div className="flex-1 min-w-0">
               <span className="text-[10px] font-mono bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{p.sku}</span>
-              <h3 className="text-sm font-bold text-slate-800 mt-1">{p.name}</h3>
+              <h3 className="text-sm font-bold text-slate-800 mt-1 line-clamp-2">{p.name}</h3>
               <p className="text-xs text-indigo-500 font-bold">${p.price}</p>
             </div>
             <div className="text-right">
               <span className={`text-lg font-black ${p.stock <= p.minStock ? 'text-red-500' : 'text-slate-800'}`}>{p.stock}</span>
               <div className="mt-2 flex space-x-1">
                 <button onClick={() => {const q = prompt(`Añadir stock a ${p.name}:`); if(q) onAddStock(p.id, parseInt(q));}} className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><i className="fas fa-plus text-xs"></i></button>
+                <button
+                  onClick={() => {
+                    const q = prompt(`URL de imagen para ${p.name} (deja vacío para quitarla):`, p.imageUrl || '');
+                    if (q === null) return;
+                    onUpdateProductImage(p.id, q);
+                  }}
+                  className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"
+                  title="Editar imagen"
+                >
+                  <i className="fas fa-image text-xs"></i>
+                </button>
                 <button onClick={() => confirm(`¿Borrar ${p.name}?`) && onDeleteProduct(p.id)} className="p-2 bg-rose-50 text-rose-600 rounded-lg"><i className="fas fa-trash-alt text-xs"></i></button>
               </div>
             </div>
@@ -600,12 +662,14 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
   const [recipient, setRecipient] = useState('');
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState('');
+  const [productSearch, setProductSearch] = useState('');
   const [quantity, setQuantity] = useState(1);
   const [orderType, setOrderType] = useState<OrderType>('PICKUP');
   const [shippingProvider, setShippingProvider] = useState('');
   const [trackingNumber, setTrackingNumber] = useState('');
   const [sellerName, setSellerName] = useState('');
   const [authorizedBy, setAuthorizedBy] = useState('');
+  const [transactionDate, setTransactionDate] = useState(toLocalDateInputValue());
   const [bundleId, setBundleId] = useState(BUNDLES[0]?.id ?? '');
   const [bundleShirtId, setBundleShirtId] = useState('');
   const [bundleMugId, setBundleMugId] = useState('');
@@ -613,46 +677,115 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
   const bundle = BUNDLES.find(b => b.id === bundleId);
   const shirts = products.filter(p => p.sku.startsWith('AMZ-'));
   const mugs = products.filter(p => p.sku.startsWith('TAZ-') || p.name.toLowerCase().includes('taza'));
-  const powerBook = products.find(p => p.sku === 'LIB-001');
-  const lucidezBook = products.find(p => p.sku === 'LIB-002');
+  const normalizeText = (value: string) => value.toLowerCase().trim();
+  const powerBook =
+    products.find(p => normalizeText(p.sku) === 'lib-001') ??
+    products.find(
+      p =>
+        normalizeText(p.name).includes('poder personal') &&
+        normalizeText(p.category).includes('libro')
+    );
+  const lucidezBook =
+    products.find(p => normalizeText(p.sku) === 'lib-002') ??
+    products.find(p => normalizeText(p.name).includes('lucidez'));
 
-  const addToCart = (product: Product, qty: number) => {
+  const upsertCartItem = (nextItem: OrderItem) => {
+    const nextLineId = nextItem.lineId || nextItem.productId;
     setCart(prev => {
-      const existing = prev.find(item => item.productId === product.id);
+      const existing = prev.find(item => (item.lineId || item.productId) === nextLineId);
       if (existing) {
         return prev.map(item =>
-          item.productId === product.id ? { ...item, quantity: item.quantity + qty } : item
+          (item.lineId || item.productId) === nextLineId ? { ...item, quantity: item.quantity + nextItem.quantity } : item
         );
       }
-      return [...prev, { productId: product.id, name: product.name, quantity: qty }];
+      return [...prev, { ...nextItem, lineId: nextLineId }];
     });
   };
 
+  const addProductToCart = (product: Product, qty: number, unitPrice = product.price) => {
+    upsertCartItem({
+      lineId: `PRODUCT-${product.id}`,
+      productId: product.id,
+      name: product.name,
+      quantity: qty,
+      unitPrice,
+      affectsStock: true
+    });
+  };
+
+  const addBundleChargeToCart = (selectedBundle: { id: string; name: string; price: number }) => {
+    upsertCartItem({
+      lineId: `BUNDLE-${selectedBundle.id}`,
+      productId: `BUNDLE-${selectedBundle.id}`,
+      name: `Bundle: ${selectedBundle.name}`,
+      quantity: 1,
+      unitPrice: selectedBundle.price,
+      affectsStock: false,
+      isBundleCharge: true,
+      bundleId: selectedBundle.id,
+      bundleName: selectedBundle.name
+    });
+  };
+
+  const addBundleComponentToCart = (product: Product, selectedBundle: { id: string }, qty: number) => {
+    upsertCartItem({
+      lineId: `BUNDLECOMP-${selectedBundle.id}-${product.id}`,
+      productId: product.id,
+      name: product.name,
+      quantity: qty,
+      unitPrice: 0,
+      affectsStock: true,
+      bundleId: selectedBundle.id
+    });
+  };
+
+  const removeCartItem = (target: OrderItem) => {
+    if (target.isBundleCharge && target.bundleId) {
+      setCart(prev => prev.filter(item => item.bundleId !== target.bundleId));
+      return;
+    }
+    const targetLineId = target.lineId || target.productId;
+    setCart(prev => prev.filter(item => (item.lineId || item.productId) !== targetLineId));
+  };
+
+  const visibleCartItems = cart.filter(item => !(item.bundleId && !item.isBundleCharge));
+  const filteredProductOptions = products.filter(p =>
+    p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
+    p.sku.toLowerCase().includes(productSearch.toLowerCase())
+  );
+
   const handleAddBundle = () => {
-    if (!bundle || !powerBook) {
-      alert('No se encontró el bundle o el libro base.');
+    if (!bundle) {
+      alert('No se encontró el bundle seleccionado.');
+      return;
+    }
+
+    if (!powerBook) {
+      alert('No se encontró el libro base (Poder Personal). Verifica SKU/nombre en inventario.');
       return;
     }
 
     if (bundle.requires === 'shirt') {
-      const shirt = products.find(p => p.id === bundleShirtId);
+      const shirt = products.find(p => String(p.id) === String(bundleShirtId));
       if (!shirt) {
         alert('Selecciona una playera válida para el bundle.');
         return;
       }
-      addToCart(powerBook, 1);
-      addToCart(shirt, 1);
+      addBundleComponentToCart(powerBook, bundle, 1);
+      addBundleComponentToCart(shirt, bundle, 1);
+      addBundleChargeToCart(bundle);
       return;
     }
 
     if (bundle.requires === 'mug') {
-      const mug = products.find(p => p.id === bundleMugId);
+      const mug = products.find(p => String(p.id) === String(bundleMugId));
       if (!mug) {
         alert('Selecciona una taza válida para el bundle.');
         return;
       }
-      addToCart(powerBook, 1);
-      addToCart(mug, 1);
+      addBundleComponentToCart(powerBook, bundle, 1);
+      addBundleComponentToCart(mug, bundle, 1);
+      addBundleChargeToCart(bundle);
       return;
     }
 
@@ -661,8 +794,9 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
         alert('No se encontró el libro de lucidez.');
         return;
       }
-      addToCart(powerBook, 1);
-      addToCart(lucidezBook, 1);
+      addBundleComponentToCart(powerBook, bundle, 1);
+      addBundleComponentToCart(lucidezBook, bundle, 1);
+      addBundleChargeToCart(bundle);
     }
   };
 
@@ -674,7 +808,8 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
       shippingProvider, 
       trackingNumber, 
       sellerName,
-      authorizedBy 
+      authorizedBy,
+      transactionDate
     });
     navigate('/orders');
   };
@@ -696,6 +831,15 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-4 shadow-sm">
+        <div className="space-y-1">
+          <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">FECHA DE MOVIMIENTO</label>
+          <input
+            type="date"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={transactionDate}
+            onChange={e => setTransactionDate(e.target.value)}
+          />
+        </div>
         <div className="space-y-1">
           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">
             {orderType === 'GIFT' ? 'A QUIÉN SE LE OBSEQUIÓ' : 'CLIENTE / DESTINATARIO'}
@@ -727,10 +871,37 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
 
       <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
         <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">AÑADIR PRODUCTOS</label>
-        <select className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none" value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)}>
-          <option value="">Seleccionar Artículo...</option>
-          {products.map(p => <option key={p.id} value={p.id}>{p.name} (Disp: {p.stock})</option>)}
-        </select>
+        <input
+          type="text"
+          placeholder="Buscar producto..."
+          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+          value={productSearch}
+          onChange={e => setProductSearch(e.target.value)}
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+          {filteredProductOptions.map(p => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setSelectedProduct(p.id)}
+              className={`text-left p-2 border rounded-xl transition ${
+                selectedProduct === p.id ? 'border-indigo-500 bg-indigo-50' : 'border-slate-100 bg-white hover:border-indigo-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <ProductThumb name={p.name} imageUrl={p.imageUrl} className="w-12 h-12 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-800 truncate">{p.name}</p>
+                  <p className="text-[10px] text-slate-400">{p.sku}</p>
+                  <p className="text-[10px] font-bold text-indigo-600">Disp: {p.stock}</p>
+                </div>
+              </div>
+            </button>
+          ))}
+          {filteredProductOptions.length === 0 && (
+            <p className="text-xs text-slate-400 px-1">No hay productos para esa búsqueda.</p>
+          )}
+        </div>
         <div className="flex space-x-2">
           <div className="w-24">
              <input type="number" min="1" className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none" value={quantity} onChange={e => setQuantity(parseInt(e.target.value) || 1)} />
@@ -738,12 +909,7 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
           <button onClick={() => {
             const p = products.find(prod => prod.id === selectedProduct);
             if(p) { 
-              const existing = cart.find(c => c.productId === p.id);
-              if (existing) {
-                setCart(cart.map(c => c.productId === p.id ? {...c, quantity: c.quantity + quantity} : c));
-              } else {
-                setCart([...cart, { productId: p.id, name: p.name, quantity }]); 
-              }
+              addProductToCart(p, quantity);
               setSelectedProduct(''); 
               setQuantity(1);
             }
@@ -793,14 +959,14 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
       </div>
 
       <div className="space-y-2">
-        {cart.length > 0 && <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">LISTA DE SALIDA</label>}
-        {cart.map(item => (
-          <div key={item.productId} className="bg-white p-3 rounded-xl border border-slate-200 flex justify-between items-center animate-in fade-in slide-in-from-left-2">
+        {visibleCartItems.length > 0 && <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">LISTA DE SALIDA</label>}
+        {visibleCartItems.map(item => (
+          <div key={item.lineId || item.productId} className="bg-white p-3 rounded-xl border border-slate-200 flex justify-between items-center animate-in fade-in slide-in-from-left-2">
             <div>
               <p className="text-sm font-bold text-slate-800">{item.name}</p>
               <p className="text-xs text-indigo-600 font-medium">Cantidad: {item.quantity}</p>
             </div>
-            <button onClick={() => setCart(cart.filter(i => i.productId !== item.productId))} className="text-rose-400 p-2 hover:bg-rose-50 rounded-lg"><i className="fas fa-trash-alt"></i></button>
+            <button onClick={() => removeCartItem(item)} className="text-rose-400 p-2 hover:bg-rose-50 rounded-lg"><i className="fas fa-trash-alt"></i></button>
           </div>
         ))}
       </div>
@@ -812,8 +978,9 @@ const CreateOrderView: React.FC<{ products: Product[], onCreate: (recipient: str
   );
 };
 
-const OrdersListView: React.FC<{ orders: Order[] }> = ({ orders }) => {
+const OrdersListView: React.FC<{ orders: Order[], products: Product[] }> = ({ orders, products }) => {
   const navigate = useNavigate();
+  const productPriceMap = new Map<string, number>(products.map(p => [p.id, p.price]));
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -836,12 +1003,21 @@ const OrdersListView: React.FC<{ orders: Order[] }> = ({ orders }) => {
                 <span className="text-[10px] font-mono text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">#{o.id.slice(0,6)}</span>
                 <div className="flex space-x-2">
                    {o.type === 'GIFT' && <span className="text-[10px] font-black px-2 py-0.5 rounded uppercase bg-purple-100 text-purple-700">Regalo</span>}
-                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${o.status === OrderStatus.PENDING ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                    {o.status === OrderStatus.PENDING ? 'Pendiente' : 'Entregado'}
+                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                    o.status === OrderStatus.PENDING
+                      ? 'bg-amber-100 text-amber-700'
+                      : o.status === OrderStatus.RETURNED
+                        ? 'bg-rose-100 text-rose-700'
+                        : 'bg-emerald-100 text-emerald-700'
+                  }`}>
+                    {o.status === OrderStatus.PENDING ? 'Pendiente' : o.status === OrderStatus.RETURNED ? 'Devuelta' : 'Entregado'}
                   </span>
                 </div>
               </div>
               <h3 className="font-bold text-slate-800 line-clamp-1">{o.recipientName}</h3>
+              <p className="text-sm font-black text-emerald-600 mt-1">
+                Total: ${getOrderTotal(o, productPriceMap).toFixed(2)}
+              </p>
               <div className="flex justify-between items-center mt-2">
                 <p className="text-[10px] text-slate-400 font-medium uppercase">{new Date(o.createdAt).toLocaleDateString()}</p>
                 <p className="text-[10px] font-bold text-indigo-600 uppercase">
@@ -856,14 +1032,23 @@ const OrdersListView: React.FC<{ orders: Order[] }> = ({ orders }) => {
   );
 };
 
-const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) => void, onDelete: (orderId: string) => Promise<boolean> }> = ({ order, onComplete, onDelete }) => {
+const OrderDetailView: React.FC<{ order: Order, products: Product[], onComplete: (signature: string) => void, onReturn: (orderId: string) => Promise<boolean>, onDelete: (orderId: string) => Promise<boolean> }> = ({ order, products, onComplete, onReturn, onDelete }) => {
   const [showFulfillment, setShowFulfillment] = useState(false);
   const qrPrintRef = React.useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const productPriceMap = new Map<string, number>(products.map(p => [p.id, p.price]));
+  const orderTotal = getOrderTotal(order, productPriceMap);
   if (!order) return null;
 
   const handleDelete = async () => {
     const ok = await onDelete(order.id);
+    if (ok) {
+      navigate('/orders');
+    }
+  };
+
+  const handleReturn = async () => {
+    const ok = await onReturn(order.id);
     if (ok) {
       navigate('/orders');
     }
@@ -881,6 +1066,7 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
       return;
     }
     const escapedName = order.recipientName.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escapedTotal = orderTotal.toFixed(2);
     printWindow.document.write(`
       <!doctype html>
       <html>
@@ -891,11 +1077,13 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
             body { font-family: Arial, sans-serif; margin: 24px; text-align: center; }
             img { width: 220px; height: 220px; }
             .name { margin-top: 12px; font-size: 18px; font-weight: 700; }
+            .total { margin-top: 8px; font-size: 16px; font-weight: 700; color: #065f46; }
           </style>
         </head>
         <body>
           <img src="${qrImage.src}" alt="QR" />
           <div class="name">${escapedName}</div>
+          <div class="total">Total: $${escapedTotal}</div>
         </body>
       </html>
     `);
@@ -966,14 +1154,16 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
         )}
 
         <div className="pt-4 border-t border-slate-50">
-          <p className="text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-wider">Resumen de Artículos</p>
-          <div className="space-y-2">
-            {order.items.map(i => (
-              <div key={i.productId} className="flex justify-between items-center text-sm">
-                <span className="text-slate-600 font-medium">{i.name}</span>
-                <span className="font-black text-slate-900 bg-slate-50 px-2 py-0.5 rounded">x{i.quantity}</span>
-              </div>
-            ))}
+          <p className="text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-wider">Resumen de Orden</p>
+          <div className="mb-3 bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+            <p className="text-[10px] font-bold text-emerald-700 uppercase">Total de la orden</p>
+            <p className="text-lg font-black text-emerald-800">${orderTotal.toFixed(2)}</p>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-3 flex justify-between items-center">
+            <p className="text-[11px] font-bold text-slate-500 uppercase">Ítems</p>
+            <p className="text-sm font-black text-slate-800">
+              {order.items.reduce((sum, item) => sum + item.quantity, 0)}
+            </p>
           </div>
         </div>
       </div>
@@ -995,22 +1185,33 @@ const OrderDetailView: React.FC<{ order: Order, onComplete: (signature: string) 
 
       {order.status !== OrderStatus.PENDING && (
         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
-          <div className="flex items-center space-x-3 text-emerald-600">
-            <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center">
-              <i className="fas fa-check"></i>
+          <div className={`flex items-center space-x-3 ${order.status === OrderStatus.RETURNED ? 'text-rose-600' : 'text-emerald-600'}`}>
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${order.status === OrderStatus.RETURNED ? 'bg-rose-100' : 'bg-emerald-100'}`}>
+              <i className={`fas ${order.status === OrderStatus.RETURNED ? 'fa-rotate-left' : 'fa-check'}`}></i>
             </div>
             <div>
-              <p className="font-black uppercase text-sm tracking-tight">Movimiento Completado</p>
-              <p className="text-[10px] text-slate-400 font-medium">{new Date(order.deliveredAt!).toLocaleString()}</p>
+              <p className="font-black uppercase text-sm tracking-tight">
+                {order.status === OrderStatus.RETURNED ? 'Movimiento Devuelto' : 'Movimiento Completado'}
+              </p>
+              <p className="text-[10px] text-slate-400 font-medium">{order.deliveredAt ? new Date(order.deliveredAt).toLocaleString() : '-'}</p>
             </div>
           </div>
-          {order.signature && (
+          {order.signature && order.status !== OrderStatus.RETURNED && (
             <div className="pt-4 border-t border-slate-50">
               <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Firma Digital</p>
               <img src={order.signature} alt="Firma" className="max-h-32 mx-auto bg-slate-50 rounded-xl" />
             </div>
           )}
         </div>
+      )}
+
+      {order.status === OrderStatus.DELIVERED && (
+        <button
+          onClick={handleReturn}
+          className="w-full py-3 text-amber-700 font-bold rounded-2xl border border-amber-200 bg-amber-50 hover:bg-amber-100 transition"
+        >
+          Registrar devolución
+        </button>
       )}
 
       <button
@@ -1065,11 +1266,17 @@ const getMonthKey = (timestamp: number) => {
 
 type ReportRow = { id: string; name: string; units: number; sales: number };
 
-const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ logs, products }) => {
+const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[], orders: Order[] }> = ({ logs, products, orders }) => {
   const productPriceMap = new Map<string, number>(products.map(p => [p.id, p.price]));
-  const exitLogs = logs.filter(l => l.type === LogType.EXIT || l.type === LogType.AMAZON_SALE);
-  const monthKeys = Array.from(new Set(exitLogs.map(l => getMonthKey(l.timestamp)))).sort().reverse();
-  const availableYears = Array.from(new Set(exitLogs.map(l => new Date(l.timestamp).getFullYear()))).sort((a, b) => b - a);
+  const orderKeys = orders.map(o => getMonthKey(o.createdAt));
+  const amazonSaleLogs = logs.filter(l => l.type === LogType.AMAZON_SALE);
+  const monthKeys = Array.from(new Set([...orderKeys, ...amazonSaleLogs.map(l => getMonthKey(l.timestamp))])).sort().reverse();
+  const availableYears = Array.from(
+    new Set<number>([
+      ...orders.map(o => new Date(o.createdAt).getFullYear()),
+      ...amazonSaleLogs.map(l => new Date(l.timestamp).getFullYear())
+    ])
+  ).sort((a, b) => b - a);
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number>(availableYears.includes(currentYear) ? currentYear : (availableYears[0] || currentYear));
   const [selectedMonth, setSelectedMonth] = useState<string>(String(new Date().getMonth() + 1).padStart(2, '0'));
@@ -1088,14 +1295,31 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
     { value: '12', label: 'Diciembre' }
   ];
 
-  const periodLogs = exitLogs.filter(l => {
+  const periodOrders = orders.filter(o => {
+    if (o.status === OrderStatus.RETURNED) return false;
+    const date = new Date(o.createdAt);
+    if (date.getFullYear() !== selectedYear) return false;
+    if (selectedMonth === 'all') return true;
+    return String(date.getMonth() + 1).padStart(2, '0') === selectedMonth;
+  });
+  const periodAmazonLogs = amazonSaleLogs.filter(l => {
     const date = new Date(l.timestamp);
     if (date.getFullYear() !== selectedYear) return false;
     if (selectedMonth === 'all') return true;
     return String(date.getMonth() + 1).padStart(2, '0') === selectedMonth;
   });
   const productTotals: Map<string, ReportRow> = new Map();
-  for (const log of periodLogs) {
+  for (const order of periodOrders) {
+    for (const item of order.items) {
+      const existing = productTotals.get(item.productId);
+      const entry = existing || { id: item.productId, name: item.name, units: 0, sales: 0 };
+      const unitPrice = getOrderItemUnitPrice(item, productPriceMap);
+      entry.units += item.quantity;
+      entry.sales += item.quantity * unitPrice;
+      productTotals.set(item.productId, entry);
+    }
+  }
+  for (const log of periodAmazonLogs) {
     const existing = productTotals.get(log.productId);
     const entry = existing || { id: log.productId, name: log.productName, units: 0, sales: 0 };
     const price = productPriceMap.get(log.productId) ?? 0;
@@ -1228,8 +1452,8 @@ const ReportsView: React.FC<{ logs: InventoryLog[], products: Product[] }> = ({ 
 
 const AmazonView: React.FC<{
   products: Product[];
-  onTransfer: (productId: string, qty: number) => Promise<void>;
-  onSale: (productId: string, qty: number) => Promise<void>;
+  onTransfer: (productId: string, qty: number, transactionDate?: string) => Promise<void>;
+  onSale: (productId: string, qty: number, transactionDate?: string) => Promise<void>;
   onEnable: (productId: string) => Promise<void>;
   onCreate: (product: Partial<Product>) => Promise<void>;
 }> = ({ products, onTransfer, onSale, onEnable, onCreate }) => {
@@ -1237,8 +1461,9 @@ const AmazonView: React.FC<{
   const [enableProduct, setEnableProduct] = useState('');
   const [transferQty, setTransferQty] = useState(1);
   const [saleQty, setSaleQty] = useState(1);
+  const [amazonTransactionDate, setAmazonTransactionDate] = useState(toLocalDateInputValue());
   const [busy, setBusy] = useState(false);
-  const [newAmazon, setNewAmazon] = useState({ sku: '', name: '', category: CATEGORIES[0], amazonStock: 0, price: 0 });
+  const [newAmazon, setNewAmazon] = useState({ sku: '', name: '', imageUrl: '', category: CATEGORIES[0], amazonStock: 0, price: 0 });
 
   const amazonProducts = products.filter(p => p.amazonEnabled);
   const nonAmazonProducts = products.filter(p => !p.amazonEnabled);
@@ -1248,7 +1473,7 @@ const AmazonView: React.FC<{
     if (!Number.isFinite(transferQty) || transferQty <= 0) return alert('Cantidad inválida');
     setBusy(true);
     try {
-      await onTransfer(selectedProduct, transferQty);
+      await onTransfer(selectedProduct, transferQty, amazonTransactionDate);
       setTransferQty(1);
     } finally {
       setBusy(false);
@@ -1260,7 +1485,7 @@ const AmazonView: React.FC<{
     if (!Number.isFinite(saleQty) || saleQty <= 0) return alert('Cantidad inválida');
     setBusy(true);
     try {
-      await onSale(selectedProduct, saleQty);
+      await onSale(selectedProduct, saleQty, amazonTransactionDate);
       setSaleQty(1);
     } finally {
       setBusy(false);
@@ -1285,6 +1510,7 @@ const AmazonView: React.FC<{
       await onCreate({
         sku: newAmazon.sku,
         name: newAmazon.name,
+        imageUrl: newAmazon.imageUrl,
         category: newAmazon.category,
         stock: 0,
         amazonStock: newAmazon.amazonStock || 0,
@@ -1292,7 +1518,7 @@ const AmazonView: React.FC<{
         minStock: 5,
         price: newAmazon.price || 0
       });
-      setNewAmazon({ sku: '', name: '', category: CATEGORIES[0], amazonStock: 0, price: 0 });
+      setNewAmazon({ sku: '', name: '', imageUrl: '', category: CATEGORIES[0], amazonStock: 0, price: 0 });
     } finally {
       setBusy(false);
     }
@@ -1342,6 +1568,12 @@ const AmazonView: React.FC<{
             value={newAmazon.name}
             onChange={e => setNewAmazon(prev => ({ ...prev, name: e.target.value }))}
           />
+          <input
+            placeholder="URL de imagen (opcional)"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl"
+            value={newAmazon.imageUrl}
+            onChange={e => setNewAmazon(prev => ({ ...prev, imageUrl: e.target.value }))}
+          />
           <div className="flex space-x-2">
             <select
               className="flex-1 px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
@@ -1379,6 +1611,15 @@ const AmazonView: React.FC<{
 
       <div className="bg-white p-4 rounded-2xl border border-slate-100 space-y-3 shadow-sm">
         <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Producto</label>
+        <div className="space-y-1">
+          <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">FECHA DE TRANSACCIÓN</label>
+          <input
+            type="date"
+            className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
+            value={amazonTransactionDate}
+            onChange={e => setAmazonTransactionDate(e.target.value)}
+          />
+        </div>
         <select
           className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none"
           value={selectedProduct}
@@ -1542,9 +1783,28 @@ export default function App() {
     }
   };
 
+  const updateProductImage = async (pid: string, imageUrl: string) => {
+    const product = products.find(p => p.id === pid);
+    if (!product) return;
+    const nextImageUrl = imageUrl.trim();
+    try {
+      await supabaseService.updateProduct(pid, { imageUrl: nextImageUrl });
+      setProducts(prev => prev.map(p => p.id === pid ? { ...p, imageUrl: nextImageUrl || undefined } : p));
+    } catch (err) {
+      const message = err instanceof Error ? err.message.toLowerCase() : '';
+      if (message.includes('image_url') || message.includes('imageurl')) {
+        alert('No se pudo guardar la imagen porque falta la columna image_url en products. En Supabase SQL ejecuta: ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url text;');
+        return;
+      }
+      alert('No se pudo actualizar la imagen del producto');
+    }
+  };
+
   const createOrder = async (recipient: string, items: OrderItem[], type: OrderType, extra: any) => {
-    // Tipos de órdenes que descuentan stock de inmediato (no requieren escaneo/firma posterior obligatoria para descontar)
+    // PICKUP queda pendiente para firma/entrega, pero el stock se descuenta al crear la orden.
     const isInstant = type === 'DIRECT_SALE' || type === 'GIFT' || type === 'SHIPPING';
+    const stockItems = items.filter(item => item.affectsStock !== false);
+    const transactionTimestamp = parseDateInputToTimestamp(extra?.transactionDate);
     
     const newOrder: Omit<Order, 'id'> = {
       type, 
@@ -1552,74 +1812,13 @@ export default function App() {
       recipientName: recipient, 
       delivererId: user?.id || 'u1', 
       delivererName: user?.name || 'Administrador',
-      createdAt: Date.now(), 
+      createdAt: transactionTimestamp, 
       status: isInstant ? OrderStatus.DELIVERED : OrderStatus.PENDING, 
-      deliveredAt: isInstant ? Date.now() : undefined, 
+      deliveredAt: isInstant ? transactionTimestamp : undefined, 
       ...extra
     };
 
-    if (isInstant) {
-      for (const item of items) {
-        const p = products.find(prod => prod.id === item.productId);
-        if (!p) {
-          alert(`Producto no encontrado: ${item.name}`);
-          return;
-        }
-        if (p.stock < item.quantity) {
-          alert(`Stock insuficiente para ${item.name}`);
-          return;
-        }
-      }
-    }
-
-    try {
-      const createdOrder = await supabaseService.createOrder(newOrder);
-      const newLogs: InventoryLog[] = [];
-
-      if (isInstant) {
-        for (const item of items) {
-          const p = products.find(prod => prod.id === item.productId);
-          if (!p) continue;
-          const updatedStock = p.stock - item.quantity;
-          await supabaseService.updateProductStock(item.productId, updatedStock);
-
-          const log: InventoryLog = {
-            id: Math.random().toString(36).slice(2, 9),
-            timestamp: Date.now(),
-            type: LogType.EXIT,
-            productId: item.productId,
-            productName: `${item.name} (${type === 'GIFT' ? 'Regalo' : 'Salida'})`,
-            quantity: item.quantity,
-            userId: user?.id || 'u1',
-            userName: user?.name || 'Admin',
-            orderId: createdOrder.id
-          };
-          await supabaseService.addLog(log);
-          newLogs.push(log);
-        }
-
-        const itemMap = new Map(items.map(item => [item.productId, item.quantity]));
-        setProducts(prev =>
-          prev.map(prod =>
-            itemMap.has(prod.id)
-              ? { ...prod, stock: prod.stock - (itemMap.get(prod.id) || 0) }
-              : prod
-          )
-        );
-        setLogs(prev => [...newLogs, ...prev]);
-      }
-
-      setOrders(prev => [createdOrder, ...prev]);
-    } catch (err) {
-      alert('No se pudo crear la orden');
-    }
-  };
-
-  const fulfillOrder = async (orderId: string, signature: string) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return;
-
-    for (const item of order.items) {
+    for (const item of stockItems) {
       const p = products.find(prod => prod.id === item.productId);
       if (!p) {
         alert(`Producto no encontrado: ${item.name}`);
@@ -1632,10 +1831,10 @@ export default function App() {
     }
 
     try {
-      await supabaseService.updateOrderStatus(orderId, OrderStatus.DELIVERED, Date.now(), signature);
+      const createdOrder = await supabaseService.createOrder(newOrder);
       const newLogs: InventoryLog[] = [];
 
-      for (const item of order.items) {
+      for (const item of stockItems) {
         const p = products.find(prod => prod.id === item.productId);
         if (!p) continue;
         const updatedStock = p.stock - item.quantity;
@@ -1643,22 +1842,20 @@ export default function App() {
 
         const log: InventoryLog = {
           id: Math.random().toString(36).slice(2, 9),
-          timestamp: Date.now(),
+          timestamp: transactionTimestamp,
           type: LogType.EXIT,
           productId: item.productId,
-          productName: item.name,
+          productName: `${item.name} (${type === 'GIFT' ? 'Regalo' : 'Salida'})`,
           quantity: item.quantity,
           userId: user?.id || 'u1',
           userName: user?.name || 'Admin',
-          orderId: orderId
+          orderId: createdOrder.id
         };
         await supabaseService.addLog(log);
         newLogs.push(log);
       }
 
-      const itemMap = new Map<string, number>(
-        order.items.map(item => [item.productId, item.quantity])
-      );
+      const itemMap = new Map(stockItems.map(item => [item.productId, item.quantity]));
       setProducts(prev =>
         prev.map(prod =>
           itemMap.has(prod.id)
@@ -1667,6 +1864,18 @@ export default function App() {
         )
       );
       setLogs(prev => [...newLogs, ...prev]);
+      setOrders(prev => [createdOrder, ...prev]);
+    } catch (err) {
+      alert('No se pudo crear la orden');
+    }
+  };
+
+  const fulfillOrder = async (orderId: string, signature: string) => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    try {
+      await supabaseService.updateOrderStatus(orderId, OrderStatus.DELIVERED, Date.now(), signature);
       setOrders(prev =>
         prev.map(o => o.id === orderId ? {
           ...o,
@@ -1677,6 +1886,72 @@ export default function App() {
       );
     } catch (err) {
       alert('No se pudo completar la orden');
+    }
+  };
+
+  const returnOrder = async (orderId: string): Promise<boolean> => {
+    const order = orders.find(o => o.id === orderId);
+    if (!order) {
+      alert('Orden no encontrada');
+      return false;
+    }
+    if (order.status === OrderStatus.RETURNED) {
+      alert('Esta orden ya fue devuelta.');
+      return false;
+    }
+
+    const confirmed = confirm('¿Registrar devolución total de esta orden? Esto devolverá stock y restará su impacto en ventas.');
+    if (!confirmed) return false;
+
+    const stockItems = order.items.filter(item =>
+      item.affectsStock !== false &&
+      !item.isBundleCharge &&
+      !item.productId.startsWith('BUNDLE-')
+    );
+
+    try {
+      for (const item of stockItems) {
+        const p = products.find(prod => prod.id === item.productId);
+        if (!p) continue;
+        const updatedStock = p.stock + item.quantity;
+        await supabaseService.updateProductStock(item.productId, updatedStock);
+
+        const log: InventoryLog = {
+          id: Math.random().toString(36).slice(2, 9),
+          timestamp: Date.now(),
+          type: LogType.ENTRY,
+          productId: item.productId,
+          productName: `${item.name} (Devolución)`,
+          quantity: item.quantity,
+          userId: user?.id || 'u1',
+          userName: user?.name || 'Admin',
+          orderId
+        };
+        await supabaseService.addLog(log);
+        setLogs(prev => [log, ...prev]);
+      }
+
+      await supabaseService.updateOrderStatus(orderId, OrderStatus.RETURNED, Date.now(), undefined);
+      const itemMap = new Map(stockItems.map(item => [item.productId, item.quantity]));
+      setProducts(prev =>
+        prev.map(prod =>
+          itemMap.has(prod.id)
+            ? { ...prod, stock: prod.stock + (itemMap.get(prod.id) || 0) }
+            : prod
+        )
+      );
+      setOrders(prev =>
+        prev.map(o => o.id === orderId ? {
+          ...o,
+          status: OrderStatus.RETURNED,
+          deliveredAt: Date.now(),
+          signature: undefined
+        } : o)
+      );
+      return true;
+    } catch (err) {
+      alert('No se pudo registrar la devolución');
+      return false;
     }
   };
 
@@ -1706,7 +1981,7 @@ export default function App() {
     }
   };
 
-  const transferToAmazon = async (productId: string, qty: number): Promise<void> => {
+  const transferToAmazon = async (productId: string, qty: number, transactionDate?: string): Promise<void> => {
     const product = products.find(p => p.id === productId);
     if (!product) return;
     if (!product.amazonEnabled) {
@@ -1719,9 +1994,10 @@ export default function App() {
     }
     const newLocalStock = product.stock - qty;
     const newAmazonStock = product.amazonStock + qty;
+    const transactionTimestamp = parseDateInputToTimestamp(transactionDate);
     const log: InventoryLog = {
       id: Math.random().toString(36).slice(2, 9),
-      timestamp: Date.now(),
+      timestamp: transactionTimestamp,
       type: LogType.AMAZON_TRANSFER,
       productId: product.id,
       productName: product.name,
@@ -1740,7 +2016,7 @@ export default function App() {
     }
   };
 
-  const recordAmazonSale = async (productId: string, qty: number): Promise<void> => {
+  const recordAmazonSale = async (productId: string, qty: number, transactionDate?: string): Promise<void> => {
     const product = products.find(p => p.id === productId);
     if (!product) return;
     if (!product.amazonEnabled) {
@@ -1752,9 +2028,10 @@ export default function App() {
       return;
     }
     const newAmazonStock = product.amazonStock - qty;
+    const transactionTimestamp = parseDateInputToTimestamp(transactionDate);
     const log: InventoryLog = {
       id: Math.random().toString(36).slice(2, 9),
-      timestamp: Date.now(),
+      timestamp: transactionTimestamp,
       type: LogType.AMAZON_SALE,
       productId: product.id,
       productName: product.name,
@@ -1916,6 +2193,7 @@ export default function App() {
                   products={products}
                   rawMaterials={rawMaterials}
                   onAddStock={addStock}
+                  onUpdateProductImage={updateProductImage}
                   onAddRawStock={addRawStock}
                   onRemoveRawStock={removeRawStock}
                   onConvertRaw={convertRawToProduct}
@@ -1923,6 +2201,7 @@ export default function App() {
                     const payload: Partial<Product> = {
                       sku: p.sku || '?',
                       name: p.name || '?',
+                      imageUrl: p.imageUrl || undefined,
                       category: p.category || 'Otros',
                       stock: p.stock || 0,
                       amazonStock: 0,
@@ -1942,12 +2221,12 @@ export default function App() {
                 />
               }
             />
-            <Route path="/orders" element={<OrdersListView orders={orders} />} />
+            <Route path="/orders" element={<OrdersListView orders={orders} products={products} />} />
             <Route path="/orders/new" element={<CreateOrderView products={products} onCreate={createOrder} />} />
-            <Route path="/orders/:id" element={<OrderRouteWrapper orders={orders} onFulfill={fulfillOrder} onDelete={deleteOrder} />} />
+            <Route path="/orders/:id" element={<OrderRouteWrapper orders={orders} products={products} onFulfill={fulfillOrder} onReturn={returnOrder} onDelete={deleteOrder} />} />
             <Route path="/scan" element={<ScannerWrapper />} />
             <Route path="/logs" element={<LogsView logs={logs} />} />
-            <Route path="/reports" element={<ReportsView logs={logs} products={products} />} />
+            <Route path="/reports" element={<ReportsView logs={logs} products={products} orders={orders} />} />
             <Route path="/amazon" element={<AmazonRouteWrapper products={products} onTransfer={transferToAmazon} onSale={recordAmazonSale} onEnable={enableAmazon} onCreate={createAmazonProduct} />} />
           </Routes>
         )}
@@ -1956,14 +2235,14 @@ export default function App() {
   );
 }
 
-const OrderRouteWrapper = ({ orders, onFulfill, onDelete }: { orders: Order[], onFulfill: (id: string, s: string) => void, onDelete: (id: string) => Promise<boolean> }) => {
+const OrderRouteWrapper = ({ orders, products, onFulfill, onReturn, onDelete }: { orders: Order[], products: Product[], onFulfill: (id: string, s: string) => void, onReturn: (id: string) => Promise<boolean>, onDelete: (id: string) => Promise<boolean> }) => {
   const location = useLocation();
   const parts = location.pathname.split('/');
   const id = parts[parts.length - 1];
   const order = orders.find(o => o.id === id);
   const navigate = useNavigate();
   if (!order) return <div className="p-4 text-center text-slate-400">Orden no encontrada</div>;
-  return <OrderDetailView order={order} onComplete={s => { onFulfill(order.id, s); navigate('/orders'); }} onDelete={onDelete} />;
+  return <OrderDetailView order={order} products={products} onComplete={s => { onFulfill(order.id, s); navigate('/orders'); }} onReturn={onReturn} onDelete={onDelete} />;
 };
 
 const AmazonRouteWrapper = ({
@@ -1975,8 +2254,8 @@ const AmazonRouteWrapper = ({
 }: 
 {
   products: Product[];
-  onTransfer: (id: string, qty: number) => Promise<void>;
-  onSale: (id: string, qty: number) => Promise<void>;
+  onTransfer: (id: string, qty: number, transactionDate?: string) => Promise<void>;
+  onSale: (id: string, qty: number, transactionDate?: string) => Promise<void>;
   onEnable: (id: string) => Promise<void>;
   onCreate: (product: Partial<Product>) => Promise<void>;
 }) => (
