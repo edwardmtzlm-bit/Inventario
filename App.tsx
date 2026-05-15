@@ -476,13 +476,14 @@ const InventoryListView: React.FC<{
   products: Product[], 
   rawMaterials: RawMaterial[],
   onAddStock: (pid: string, qty: number) => void, 
+  onRemoveStock: (pid: string, qty: number) => void,
   onUpdateProductImage: (pid: string, imageUrl: string) => void,
   onDeleteProduct: (pid: string) => void,
   onAddProduct: (p: Partial<Product>) => void,
   onAddRawStock: (size: string, color: string, qty: number) => void,
   onRemoveRawStock: (size: string, color: string, qty: number) => void,
   onConvertRaw: (design: string, size: string, color: string, qty: number) => void
-}> = ({ products, rawMaterials, onAddStock, onUpdateProductImage, onDeleteProduct, onAddProduct, onAddRawStock, onRemoveRawStock, onConvertRaw }) => {
+}> = ({ products, rawMaterials, onAddStock, onRemoveStock, onUpdateProductImage, onDeleteProduct, onAddProduct, onAddRawStock, onRemoveRawStock, onConvertRaw }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [rawSize, setRawSize] = useState(RAW_SIZES[0]);
@@ -534,6 +535,16 @@ const InventoryListView: React.FC<{
             <div className="text-right">
               <span className={`text-lg font-black ${p.stock <= p.minStock ? 'text-red-500' : 'text-slate-800'}`}>{p.stock}</span>
               <div className="mt-2 flex space-x-1">
+                <button
+                  onClick={() => {
+                    const q = prompt(`Restar stock a ${p.name}:`);
+                    if (q) onRemoveStock(p.id, parseInt(q));
+                  }}
+                  className="p-2 bg-rose-50 text-rose-600 rounded-lg"
+                  title="Restar stock"
+                >
+                  <i className="fas fa-minus text-xs"></i>
+                </button>
                 <button onClick={() => {const q = prompt(`Añadir stock a ${p.name}:`); if(q) onAddStock(p.id, parseInt(q));}} className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><i className="fas fa-plus text-xs"></i></button>
                 <button
                   onClick={() => {
@@ -1783,6 +1794,39 @@ export default function App() {
     }
   };
 
+  const removeStock = async (pid: string, qty: number) => {
+    if (!Number.isFinite(qty) || qty <= 0) {
+      alert('Cantidad invalida');
+      return;
+    }
+    const p = products.find(prod => prod.id === pid);
+    if (!p) return;
+    if (qty > p.stock) {
+      alert(`No puedes restar ${qty}. Solo hay ${p.stock} unidades disponibles.`);
+      return;
+    }
+    const newStock = p.stock - qty;
+    const log: InventoryLog = {
+      id: Math.random().toString(36).slice(2, 9),
+      timestamp: Date.now(),
+      type: LogType.EXIT,
+      productId: pid,
+      productName: p.name,
+      quantity: qty,
+      userId: user?.id || 'sys',
+      userName: user?.name || 'Sistema'
+    };
+
+    try {
+      await supabaseService.updateProductStock(pid, newStock);
+      await supabaseService.addLog(log);
+      setProducts(prev => prev.map(pr => pr.id === pid ? { ...pr, stock: newStock } : pr));
+      setLogs(prev => [log, ...prev]);
+    } catch (err) {
+      alert('No se pudo actualizar el stock');
+    }
+  };
+
   const updateProductImage = async (pid: string, imageUrl: string) => {
     const product = products.find(p => p.id === pid);
     if (!product) return;
@@ -2193,6 +2237,7 @@ export default function App() {
                   products={products}
                   rawMaterials={rawMaterials}
                   onAddStock={addStock}
+                  onRemoveStock={removeStock}
                   onUpdateProductImage={updateProductImage}
                   onAddRawStock={addRawStock}
                   onRemoveRawStock={removeRawStock}
