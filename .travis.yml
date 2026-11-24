@@ -1,0 +1,18 @@
+language: java
+dist: jammy
+jdk: openjdk17
+
+branches:
+  only:
+    - main
+    - develop
+    - /^feature\/.*$/
+
+cache:
+  directories:
+    - $HOME/.m2
+
+install: true
+
+script:
+  - mvn -B -f importador/pom.xml test
